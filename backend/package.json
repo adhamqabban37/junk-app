@@ -17,7 +17,11 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "migrate": "typeorm-ts-node-commonjs migration:run -d src/database/data-source.ts",
+    "migrate:revert": "typeorm-ts-node-commonjs migration:revert -d src/database/data-source.ts",
+    "seed:taxonomy": "ts-node -r dotenv/config src/database/seeds/taxonomy.seed.ts",
+    "seed:dev": "ts-node -r dotenv/config src/database/seeds/dev.seed.ts"
   },
   "dependencies": {
     "@nestjs/bullmq": "^11.0.4",
@@ -28,9 +32,11 @@
     "@nestjs/passport": "^11.0.5",
     "@nestjs/platform-express": "^11.0.1",
     "@nestjs/typeorm": "^11.0.3",
+    "bcryptjs": "^2.4.3",
     "bullmq": "^5.81.3",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
+    "dotenv": "^17.4.1",
     "ioredis": "^5.4.1",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
@@ -46,6 +52,7 @@
     "@nestjs/cli": "^11.0.0",
     "@nestjs/schematics": "^11.0.0",
     "@nestjs/testing": "^11.0.1",
+    "@types/bcryptjs": "^2.4.6",
     "@types/express": "^5.0.0",
     "@types/jest": "^30.0.0",
     "@types/node": "^24.0.0",

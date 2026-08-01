@@ -12,14 +12,32 @@ Tracks completion against `docs/BUILD_PLAN.md`. Check boxes as each phase's acce
 - [x] README with documented clone-to-running-app setup sequence
 - [x] **Acceptance verified:** both dev servers boot (verified directly — `npm run dev` via cmd.exe wrapper loses buffered output on abrupt kill on Windows, direct `next`/`nest` invocation confirms clean startup), `npm test` passes both workspaces, `docker-compose up` brings up healthy Postgres+Redis, README sequence works up through Phase 0 (migrate/seed steps land in Phase 1)
 
-## Phase 1 — Data Layer
-- [ ] TypeORM entities + migrations for all 11 entities
-- [ ] RLS policies per table
-- [ ] pgvector extension enabled
-- [ ] PartTaxonomy seed script
-- [ ] Dev seed script (`npm run seed:dev`): demo tenant + worker (PIN) + manager (email/password)
-- [ ] Tests: tenant-scope violation throws; RLS isolation across SELECT/INSERT/UPDATE
-- [ ] **Acceptance verified:** migrations apply cleanly; RLS isolation tests pass (all 3 operations); seeds present
+## Phase 1 — Data Layer 🚧 IN PROGRESS (paused 2026-08-01, mid-fix)
+- [x] TypeORM entities for all 11 tenant-scoped entities + Tenant + PartTaxonomy (`backend/src/database/entities/*.entity.ts`)
+- [x] Migration written: `backend/migrations/1785559260000-InitialSchema.ts` — all tables, enums, indexes, FKs, RLS policies (`ENABLE` + `FORCE ROW LEVEL SECURITY` + `tenant_isolation` policy per tenant-scoped table)
+- [x] `withTenantContext()` helper (`backend/src/database/tenant-context.ts`) — sets `SET LOCAL app.tenant_id` inside a transaction (UUID-validated, since SET doesn't accept bind params)
+- [x] Taxonomy seed (`backend/src/database/seeds/taxonomy.seed.ts`) — 22 common salvage parts, 8 flagged quick-pick
+- [x] Dev seed (`backend/src/database/seeds/dev.seed.ts`) — demo tenant + PIN worker + email/password manager
+- [x] `DatabaseModule` wired into `AppModule`
+- [x] RLS isolation e2e test written: `backend/test/rls-isolation.e2e-spec.ts` (SELECT/INSERT/UPDATE + no-context default-deny)
+- [ ] pgvector extension enabled — **BLOCKED, see below**
+- [ ] Migration actually applied against the corrected (non-superuser) role
+- [ ] Dev seed re-run against the corrected role
+- [ ] RLS isolation e2e test passing
+- [ ] **Acceptance NOT yet verified**
+
+### 🔴 Current blocker (exact next step)
+First run of the RLS e2e test revealed the real bug: RLS was **not being enforced at all**. Root cause — `docker-compose.yml`'s `POSTGRES_USER` (`junkyard`) is always created as a Postgres **superuser** by the official image's bootstrap, and Postgres never applies row-level security to superusers, even with `FORCE ROW LEVEL SECURITY`. Fix in progress:
+1. Added `docker/postgres-init/01-app-role.sql` — creates a non-superuser role `junkyard_app`, granted DB + schema privileges. Confirmed via `\du` that it now exists correctly (no superuser attributes).
+2. Updated `backend/.env` / `.env.example` `DATABASE_URL` to connect as `junkyard_app` instead of `junkyard`.
+3. Recreated the Postgres container+volume so the init script actually ran (`docker compose down -v && docker compose up -d postgres redis`) — done, confirmed healthy.
+4. Ran `npm run migrate` as `junkyard_app` — **fails** on the very first statement: `CREATE EXTENSION IF NOT EXISTS vector` → `ERROR: 42501: Must be superuser to create this extension` (this pgvector image build doesn't have it marked "trusted", so a non-superuser can't install it).
+
+**Next step:** move `CREATE EXTENSION IF NOT EXISTS vector;` (and `uuid-ossp` if still needed) out of the TypeORM migration and into `docker/postgres-init/01-app-role.sql` (or a `00-extensions.sql` run before it), so it executes once as the bootstrap superuser during container init. The migration's own `CREATE EXTENSION IF NOT EXISTS vector` line can stay as a harmless no-op guard, or be removed. After that: re-run `npm run migrate`, `npm run seed:dev`, then `npm run test:e2e` (both in `backend/`) and confirm `rls-isolation.e2e-spec.ts` passes all 5 cases before checking off this phase.
+
+Also fixed along the way (already applied, don't redo):
+- Test's cross-tenant VIN string was 19 chars against a `varchar(17)` column, masking the real RLS check with a length error — fixed to a 17-char value.
+- `entities/index.ts` barrel re-exports enums alongside entity classes, which TypeORM's `entities:` array rejects (`Object.values(entities)` broke `data-source.ts`/`database.module.ts`) — fixed by adding `backend/src/database/entities.list.ts` with an explicit `ENTITIES` array of just the classes; both files now import from there instead.
 
 ## Phase 2 — Auth & Multi-tenancy
 - [ ] PIN login (Worker), email+password login (Manager/Owner)
