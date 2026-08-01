@@ -32,6 +32,13 @@ export interface PartDraft {
   photos: DraftPhoto[];
 }
 
+export interface TaxonomyItem {
+  id: string;
+  name: string;
+  category: string;
+  isQuickPick: boolean;
+}
+
 export interface VehicleDraft {
   id: string;
   vin: string | null;

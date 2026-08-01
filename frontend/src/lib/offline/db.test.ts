@@ -1,7 +1,15 @@
 import "fake-indexeddb/auto";
 import { afterEach, describe, expect, it } from "vitest";
-import { _resetDbForTests, deleteDraft, getDraft, listDrafts, putDraft } from "./db";
-import type { VehicleDraft } from "./types";
+import {
+  _resetDbForTests,
+  deleteDraft,
+  getCachedTaxonomy,
+  getDraft,
+  listDrafts,
+  putDraft,
+  putTaxonomy,
+} from "./db";
+import type { TaxonomyItem, VehicleDraft } from "./types";
 
 function makeDraft(overrides: Partial<VehicleDraft> = {}): VehicleDraft {
   return {
@@ -59,5 +67,24 @@ describe("offline db", () => {
     await putDraft(makeDraft({ id: "a" }));
     await deleteDraft("a");
     expect(await getDraft("a")).toBeUndefined();
+  });
+
+  it("caches the taxonomy list and replaces it wholesale on refresh", async () => {
+    const items: TaxonomyItem[] = [
+      { id: "t1", name: "Alternator", category: "Electrical", isQuickPick: true },
+      { id: "t2", name: "Starter", category: "Electrical", isQuickPick: false },
+    ];
+    await putTaxonomy(items);
+    expect(await getCachedTaxonomy()).toEqual(items);
+
+    const refreshed: TaxonomyItem[] = [
+      { id: "t3", name: "Radiator", category: "Cooling", isQuickPick: true },
+    ];
+    await putTaxonomy(refreshed);
+    expect(await getCachedTaxonomy()).toEqual(refreshed);
+  });
+
+  it("returns an empty array when nothing has been cached yet", async () => {
+    expect(await getCachedTaxonomy()).toEqual([]);
   });
 });

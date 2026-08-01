@@ -3,6 +3,13 @@ export interface WorkerSummary {
   name: string;
 }
 
+export interface TaxonomyItemResponse {
+  id: string;
+  name: string;
+  category: string;
+  isQuickPick: boolean;
+}
+
 export class ApiError extends Error {
   status: number;
 
@@ -13,7 +20,7 @@ export class ApiError extends Error {
   }
 }
 
-function apiBaseUrl(): string {
+export function apiBaseUrl(): string {
   return process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3000";
 }
 
@@ -54,6 +61,16 @@ export async function loginPin(
   });
   const body = await parseJsonOrThrow<{ accessToken: string }>(res);
   return body.accessToken;
+}
+
+export async function fetchTaxonomy(
+  token: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<TaxonomyItemResponse[]> {
+  const res = await fetchImpl(`${apiBaseUrl()}/taxonomy`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return parseJsonOrThrow<TaxonomyItemResponse[]>(res);
 }
 
 export async function loginManager(

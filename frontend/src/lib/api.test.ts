@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ApiError, listWorkers, loginManager, loginPin } from "./api";
+import { ApiError, fetchTaxonomy, listWorkers, loginManager, loginPin } from "./api";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -48,6 +48,24 @@ describe("loginPin", () => {
     await expect(loginPin("tenant-1", "worker-1", "1234", fetchMock)).rejects.toBeInstanceOf(
       ApiError,
     );
+  });
+});
+
+describe("fetchTaxonomy", () => {
+  it("sends the bearer token and returns the taxonomy list", async () => {
+    const items = [{ id: "t1", name: "Alternator", category: "Electrical", isQuickPick: true }];
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(items));
+
+    const result = await fetchTaxonomy("jwt-token", fetchMock);
+
+    expect(result).toEqual(items);
+    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((options.headers as Record<string, string>).Authorization).toBe("Bearer jwt-token");
+  });
+
+  it("throws ApiError on failure", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ message: "Unauthorized" }, 401));
+    await expect(fetchTaxonomy("bad-token", fetchMock)).rejects.toBeInstanceOf(ApiError);
   });
 });
 
