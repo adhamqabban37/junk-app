@@ -2,15 +2,15 @@
 
 Tracks completion against `docs/BUILD_PLAN.md`. Check boxes as each phase's acceptance criteria are verified.
 
-## Phase 0 — Scaffold
-- [ ] npm workspaces for `/frontend` + `/backend`
-- [ ] TypeScript strict mode both workspaces
-- [ ] Tailwind + shadcn/ui in frontend
-- [ ] ESLint/Prettier shared config
-- [ ] Jest (backend) + Vitest/RTL (frontend), trivial failing→passing test round-trip verified
-- [ ] Docker Compose: Postgres (pgvector image) + Redis
-- [ ] README with documented clone-to-running-app setup sequence
-- [ ] **Acceptance verified:** dev servers boot, `npm test` runs both workspaces, `docker-compose up` reachable, README sequence works on a clean checkout
+## Phase 0 — Scaffold ✅ (2026-07-31)
+- [x] npm workspaces for `/frontend` + `/backend`
+- [x] TypeScript strict mode both workspaces
+- [x] Tailwind + shadcn/ui in frontend
+- [x] ESLint/Prettier shared config
+- [x] Jest (backend) + Vitest/RTL (frontend), trivial failing→passing test round-trip verified (frontend)
+- [x] Docker Compose: Postgres (pgvector image) + Redis
+- [x] README with documented clone-to-running-app setup sequence
+- [x] **Acceptance verified:** both dev servers boot (verified directly — `npm run dev` via cmd.exe wrapper loses buffered output on abrupt kill on Windows, direct `next`/`nest` invocation confirms clean startup), `npm test` passes both workspaces, `docker-compose up` brings up healthy Postgres+Redis, README sequence works up through Phase 0 (migrate/seed steps land in Phase 1)
 
 ## Phase 1 — Data Layer
 - [ ] TypeORM entities + migrations for all 11 entities
@@ -75,3 +75,8 @@ Tracks completion against `docs/BUILD_PLAN.md`. Check boxes as each phase's acce
 ## Notes
 - Planning Gate review (docs/BUILD_PLAN.md § GSTACK REVIEW REPORT) completed 2026-07-31 — 11 findings, all fixed pre-build.
 - Re-verify the RLS/connection-pooling leak risk (Phase 2, highest-severity finding) once auth middleware is implemented — easy to silently reintroduce on a pooling-strategy change.
+- **Operational quirks found during Phase 0 (Windows + this npm version):**
+  - `npm install <pkgs>` on an *existing* node_modules tree can crash with `TypeError: Invalid Version:` in npm's arborist dedupe logic when a package is both a direct and transitive dependency with different version ranges (hit with `bullmq`/`passport`). Fix: declare all deps directly in `package.json` and do one fresh `rm -rf node_modules package-lock.json && npm install` rather than incremental adds.
+  - `typeorm@^1.1.0` peer-requires `ioredis@^5.x`; pinning `ioredis@^6` breaks `npm install` with a real ERESOLVE (not a bug — fix the version).
+  - Piping `npm install ... | tail` (or similar) masks the real exit code in this shell — always check actual output/exit code directly (e.g. redirect to a file, `echo "EXIT=$?"` on its own line with no pipe) rather than trusting a green summary.
+  - `npm run dev` (nest/next) invoked via the Windows `cmd.exe` wrapper loses buffered stdout when killed abruptly (e.g. by `timeout`); invoking the underlying binary directly (`node node_modules/next/dist/bin/next dev`, `node_modules/.bin/nest start`) gives reliable output for verification.
