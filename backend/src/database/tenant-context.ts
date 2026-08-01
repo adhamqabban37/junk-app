@@ -1,4 +1,4 @@
-import { DataSource, EntityManager } from "typeorm";
+import { DataSource, EntityManager } from 'typeorm';
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -16,7 +16,9 @@ export async function withTenantContext<T>(
   work: (manager: EntityManager) => Promise<T>,
 ): Promise<T> {
   if (!UUID_PATTERN.test(tenantId)) {
-    throw new Error(`withTenantContext: tenantId is not a valid UUID: ${tenantId}`);
+    throw new Error(
+      `withTenantContext: tenantId is not a valid UUID: ${tenantId}`,
+    );
   }
 
   const queryRunner = dataSource.createQueryRunner();

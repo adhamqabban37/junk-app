@@ -1,8 +1,14 @@
-import { Column, ColumnType, CreateDateColumn, Entity, PrimaryGeneratedColumn } from "typeorm";
+import {
+  Column,
+  ColumnType,
+  CreateDateColumn,
+  Entity,
+  PrimaryGeneratedColumn,
+} from 'typeorm';
 
 export enum EmbeddingType {
-  IMAGE = "image",
-  TEXT = "text",
+  IMAGE = 'image',
+  TEXT = 'text',
 }
 
 /**
@@ -11,28 +17,28 @@ export enum EmbeddingType {
  * here — the real DDL comes from the migration, this only shapes query
  * parameter typing.
  */
-const VECTOR_COLUMN_TYPE = "vector" as unknown as ColumnType;
+const VECTOR_COLUMN_TYPE = 'vector' as unknown as ColumnType;
 
-@Entity("embeddings")
+@Entity('embeddings')
 export class Embedding {
-  @PrimaryGeneratedColumn("uuid")
+  @PrimaryGeneratedColumn('uuid')
   id!: string;
 
-  @Column({ name: "tenant_id", type: "uuid" })
+  @Column({ name: 'tenant_id', type: 'uuid' })
   tenantId!: string;
 
-  @Column({ name: "part_id", type: "uuid", nullable: true })
+  @Column({ name: 'part_id', type: 'uuid', nullable: true })
   partId!: string | null;
 
-  @Column({ name: "part_image_id", type: "uuid", nullable: true })
+  @Column({ name: 'part_image_id', type: 'uuid', nullable: true })
   partImageId!: string | null;
 
-  @Column({ type: "enum", enum: EmbeddingType })
+  @Column({ type: 'enum', enum: EmbeddingType })
   type!: EmbeddingType;
 
   @Column({ type: VECTOR_COLUMN_TYPE, nullable: true })
   vector!: number[] | null;
 
-  @CreateDateColumn({ name: "created_at" })
+  @CreateDateColumn({ name: 'created_at' })
   createdAt!: Date;
 }

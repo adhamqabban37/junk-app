@@ -1,10 +1,10 @@
-import "reflect-metadata";
-import "dotenv/config";
-import { DataSource } from "typeorm";
-import { ENTITIES } from "../src/database/entities.list";
-import { Tenant } from "../src/database/entities/tenant.entity";
-import { Vehicle, CrushStatus } from "../src/database/entities/vehicle.entity";
-import { withTenantContext } from "../src/database/tenant-context";
+import 'reflect-metadata';
+import 'dotenv/config';
+import { DataSource } from 'typeorm';
+import { ENTITIES } from '../src/database/entities.list';
+import { Tenant } from '../src/database/entities/tenant.entity';
+import { Vehicle, CrushStatus } from '../src/database/entities/vehicle.entity';
+import { withTenantContext } from '../src/database/tenant-context';
 
 /**
  * Verifies Postgres RLS actually isolates tenants for SELECT, INSERT, and
@@ -12,7 +12,7 @@ import { withTenantContext } from "../src/database/tenant-context";
  * Runs against the real dev Postgres (docker-compose), not a mock, since
  * RLS is a database-level guarantee that can't be meaningfully unit-tested.
  */
-describe("RLS tenant isolation", () => {
+describe('RLS tenant isolation', () => {
   let dataSource: DataSource;
   let tenantA: Tenant;
   let tenantB: Tenant;
@@ -21,10 +21,10 @@ describe("RLS tenant isolation", () => {
 
   beforeAll(async () => {
     dataSource = new DataSource({
-      type: "postgres",
+      type: 'postgres',
       url:
         process.env.DATABASE_URL ??
-        "postgres://junkyard:junkyard_dev@localhost:5432/junkyard_dev",
+        'postgres://junkyard:junkyard_dev@localhost:5432/junkyard_dev',
       entities: ENTITIES,
       synchronize: false,
     });
@@ -42,7 +42,7 @@ describe("RLS tenant isolation", () => {
       manager.getRepository(Vehicle).save(
         manager.getRepository(Vehicle).create({
           tenantId: tenantA.id,
-          vin: "TENANTA1234567890",
+          vin: 'TENANTA1234567890',
           crushStatus: CrushStatus.ACTIVE,
         }),
       ),
@@ -51,7 +51,7 @@ describe("RLS tenant isolation", () => {
       manager.getRepository(Vehicle).save(
         manager.getRepository(Vehicle).create({
           tenantId: tenantB.id,
-          vin: "TENANTB1234567890",
+          vin: 'TENANTB1234567890',
           crushStatus: CrushStatus.ACTIVE,
         }),
       ),
@@ -67,12 +67,19 @@ describe("RLS tenant isolation", () => {
     await dataSource.destroy();
   });
 
-  it("SELECT only returns rows for the active tenant context", async () => {
+  it('SELECT only returns rows for the active tenant context', async () => {
     const seenByA = await withTenantContext(dataSource, tenantA.id, (manager) =>
-      manager.getRepository(Vehicle).find({ where: { vin: "TENANTA1234567890" } }),
+      manager
+        .getRepository(Vehicle)
+        .find({ where: { vin: 'TENANTA1234567890' } }),
     );
-    const crossSeenByA = await withTenantContext(dataSource, tenantA.id, (manager) =>
-      manager.getRepository(Vehicle).find({ where: { vin: "TENANTB1234567890" } }),
+    const crossSeenByA = await withTenantContext(
+      dataSource,
+      tenantA.id,
+      (manager) =>
+        manager
+          .getRepository(Vehicle)
+          .find({ where: { vin: 'TENANTB1234567890' } }),
     );
 
     expect(seenByA).toHaveLength(1);
@@ -80,13 +87,13 @@ describe("RLS tenant isolation", () => {
     expect(crossSeenByA).toHaveLength(0);
   });
 
-  it("SELECT with no tenant context set returns zero rows (default-deny)", async () => {
+  it('SELECT with no tenant context set returns zero rows (default-deny)', async () => {
     // No withTenantContext wrapper here — app.tenant_id is unset on this
     // connection, so current_setting(..., true) is NULL and the RLS USING
     // clause (tenant_id = NULL) matches nothing.
     const rows = await dataSource
       .getRepository(Vehicle)
-      .find({ where: { vin: "TENANTA1234567890" } });
+      .find({ where: { vin: 'TENANTA1234567890' } });
     expect(rows).toHaveLength(0);
   });
 
@@ -98,7 +105,7 @@ describe("RLS tenant isolation", () => {
             // Session context is tenant A, but this row claims tenant B —
             // the RLS WITH CHECK clause must reject it.
             tenantId: tenantB.id,
-            vin: "CROSSTENANT123456", // 17 chars, matches vin varchar(17)
+            vin: 'CROSSTENANT123456', // 17 chars, matches vin varchar(17)
             crushStatus: CrushStatus.ACTIVE,
           }),
         ),
@@ -110,14 +117,19 @@ describe("RLS tenant isolation", () => {
     const result = await withTenantContext(dataSource, tenantA.id, (manager) =>
       manager
         .getRepository(Vehicle)
-        .update({ id: vehicleB.id }, { model: "should-not-apply" }),
+        .update({ id: vehicleB.id }, { model: 'should-not-apply' }),
     );
     // The RLS USING clause filters vehicleB out of tenant A's view before
     // the UPDATE ever matches it, so affected rows is 0, not an error.
     expect(result.affected).toBe(0);
 
-    const stillUnchanged = await withTenantContext(dataSource, tenantB.id, (manager) =>
-      manager.getRepository(Vehicle).findOneOrFail({ where: { id: vehicleB.id } }),
+    const stillUnchanged = await withTenantContext(
+      dataSource,
+      tenantB.id,
+      (manager) =>
+        manager
+          .getRepository(Vehicle)
+          .findOneOrFail({ where: { id: vehicleB.id } }),
     );
     expect(stillUnchanged.model).toBeNull();
   });

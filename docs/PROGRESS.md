@@ -35,13 +35,21 @@ Also fixed along the way:
 - Test's cross-tenant VIN string was 19 chars against a `varchar(17)` column, masking the real RLS check with a length error — fixed to a 17-char value.
 - `entities/index.ts` barrel re-exports enums alongside entity classes, which TypeORM's `entities:` array rejects (`Object.values(entities)` broke `data-source.ts`/`database.module.ts`) — fixed by adding `backend/src/database/entities.list.ts` with an explicit `ENTITIES` array of just the classes; both files now import from there instead.
 
-## Phase 2 — Auth & Multi-tenancy
-- [ ] PIN login (Worker), email+password login (Manager/Owner)
-- [ ] Long-lived JWT cached client-side for offline PWA launch
-- [ ] RBAC guard (worker/manager/owner)
-- [ ] Tenant context middleware setting RLS session var per request
-- [ ] Pooled-connection RLS leak test (two tenants, same connection, rapid requests)
-- [ ] **Acceptance verified:** auth e2e covers both login mechanisms, offline token validity, RBAC denial, RLS isolation under pooled/concurrent load
+## Phase 2 — Auth & Multi-tenancy ✅ (2026-08-01)
+- [x] PIN login (Worker) via `POST /auth/login/pin` `{tenantId, userId, pin}` — `GET /auth/tenants/:tenantId/workers` lists worker names/ids for the PIN picker (never the PIN itself, see user.entity.ts)
+- [x] Email+password login (Manager/Owner) via `POST /auth/login/manager` `{tenantId, email, password}`
+- [x] Long-lived JWT (`JWT_EXPIRES_IN=30d`) — claims (`sub`, `tenantId`, `role`, `name`) are self-contained, `JwtStrategy.validate()` does no DB round-trip so an offline-launched PWA can still authenticate locally-cached requests
+- [x] RBAC: `@Roles(...)` decorator + `RolesGuard`, e.g. `GET /auth/workers` (own-tenant worker list) is manager/owner-only
+- [x] `JwtAuthGuard` registered globally (`APP_GUARD`) — every route requires a valid JWT unless annotated `@Public()`
+- [x] Tenant-scoped queries go through the existing `withTenantContext()` helper (Phase 1) inside `AuthService`, never a bare repository call — `SET LOCAL app.tenant_id` is Postgres-guaranteed transaction-scoped, so there is no request-scoped "tenant context middleware" object that could itself leak; the guarantee lives at the DB layer instead
+- [x] Pooled-connection RLS leak test: `backend/test/auth.e2e-spec.ts` forces `DB_POOL_MAX=2` and fires 30 concurrent alternating-tenant requests at `GET /auth/workers`, asserting every response only ever contains its own tenant's worker — passing
+- [x] **Acceptance verified:** `backend/test/auth.e2e-spec.ts` (7/7) covers both login mechanisms (success + failure), `/auth/me` token validity + claims, RBAC denial (worker on manager-only route → 403), RLS scoping (manager only sees own-tenant workers), and the pooled-connection concurrent-tenant leak test. `npm test`, `npm run test:e2e` (12/12 across all 3 suites), `npm run build`, and `npm run lint` all clean.
+
+### Design decisions made during this phase
+- **Login requires a client-supplied `tenantId`**, for both PIN and password login. There's no cross-tenant email lookup (email isn't globally unique, and querying `users` without a tenant context would mean bypassing RLS for auth itself). This mirrors how the PIN flow already needed a known tenant to list workers from — in practice a yard's device/URL already knows which tenant it belongs to before anyone logs in. Tenant *identification* (slug, subdomain, QR code) is a Phase 3 frontend/UX concern, not solved here.
+- **`DatabaseModule` is now `@Global()`** and exports `TypeOrmModule`, so `DataSource` is injectable anywhere (AuthModule today, every future resource module later) without re-importing it per feature module.
+- **`DB_POOL_MAX` config** added to `DatabaseModule` (defaults to 10, same as node-postgres's own default) specifically so `auth.e2e-spec.ts` can force a tiny pool and reliably reproduce the pooled-connection leak scenario the Phase 2 planning-gate finding warned about.
+- **Scaffolded root `GET /` → `GET /health`.** The placeholder Nest "Hello World" route had no reason to stay unauthenticated once `JwtAuthGuard` went global; replaced with a real `@Public()` health check instead of just exempting the placeholder.
 
 ## Phase 3 — Mobile Intake Flow
 - [ ] Auth screen

@@ -1,22 +1,27 @@
-import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn } from "typeorm";
+import {
+  Column,
+  CreateDateColumn,
+  Entity,
+  PrimaryGeneratedColumn,
+} from 'typeorm';
 
-@Entity("pricing_history")
+@Entity('pricing_history')
 export class PricingHistory {
-  @PrimaryGeneratedColumn("uuid")
+  @PrimaryGeneratedColumn('uuid')
   id!: string;
 
-  @Column({ name: "tenant_id", type: "uuid" })
+  @Column({ name: 'tenant_id', type: 'uuid' })
   tenantId!: string;
 
-  @Column({ name: "part_id", type: "uuid" })
+  @Column({ name: 'part_id', type: 'uuid' })
   partId!: string;
 
-  @Column({ type: "varchar", length: 100 })
+  @Column({ type: 'varchar', length: 100 })
   source!: string;
 
-  @Column({ type: "numeric", precision: 10, scale: 2 })
+  @Column({ type: 'numeric', precision: 10, scale: 2 })
   price!: string;
 
-  @CreateDateColumn({ name: "created_at" })
+  @CreateDateColumn({ name: 'created_at' })
   createdAt!: Date;
 }
