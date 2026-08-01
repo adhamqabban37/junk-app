@@ -51,17 +51,23 @@ Also fixed along the way:
 - **`DB_POOL_MAX` config** added to `DatabaseModule` (defaults to 10, same as node-postgres's own default) specifically so `auth.e2e-spec.ts` can force a tiny pool and reliably reproduce the pooled-connection leak scenario the Phase 2 planning-gate finding warned about.
 - **Scaffolded root `GET /` → `GET /health`.** The placeholder Nest "Hello World" route had no reason to stay unauthenticated once `JwtAuthGuard` went global; replaced with a real `@Public()` health check instead of just exempting the placeholder.
 
-## Phase 3 — Mobile Intake Flow
-- [ ] Auth screen
-- [ ] Home screen w/ sync status + empty state (0 pending)
-- [ ] VIN Scanner + manual entry fallback
+## Phase 3 — Mobile Intake Flow 🚧 IN PROGRESS (started 2026-08-01)
+- [x] Zustand store + IndexedDB + client-generated UUID dedup (`frontend/src/lib/offline/{db,store}.ts`) — built first, everything else builds on it
+- [x] NHTSA VIN decode client + Zod validation (`frontend/src/lib/nhtsa.ts`) — explicitly catches NHTSA's "200 OK, no make/model" undecodable-VIN shape, not just network failures
+- [x] Blur/lighting quality check (`frontend/src/lib/offline/image-quality.ts`) — pure Laplacian-variance + mean-luminance function, fixture-tested, decoupled from canvas/video capture
+- [x] Background Sync registration + `online`-event retry (`frontend/src/lib/offline/sync.ts`) — full Workbox/service-worker build deferred to Phase 7 by design (see that phase's notes)
+- [x] Auth screen (`(mobile)/login`) — device→tenant binding, Worker PIN / Manager email+password tabs
+- [x] Home screen w/ sync status + empty state (0 pending) (`(mobile)/page.tsx`, `components/mobile/sync-status-bar.tsx`)
+- [x] VIN Scanner + manual entry fallback (`(mobile)/intake/[draftId]/vin`) — manual entry is the only path when `BarcodeDetector` is unsupported (Safari/Firefox), not a secondary option nobody exercises
 - [ ] Vehicle Context screen + NHTSA decode + IndexedDB draft
 - [ ] Part Selection w/ precached taxonomy
 - [ ] Camera Capture + ghost overlays + blur/lighting validation
 - [ ] Sync Queue Manager screen + empty state
-- [ ] Zustand store + IndexedDB + Background Sync API
-- [ ] Client-generated UUID dedup for offline drafts
-- [ ] **Acceptance verified:** full offline happy path with network disabled; manual-VIN-entry fallback path explicitly exercised
+- [ ] **Acceptance NOT yet verified:** full offline happy path with network disabled; manual-VIN-entry fallback path explicitly exercised
+
+### Notes
+- **Dynamic route pages are Server Component wrappers, not `use(params)` Client Components.** `(mobile)/intake/[draftId]/vin/page.tsx` is an async Server Component that `await params` and passes a plain `draftId` string prop to a `'use client'` child (`vin-page-client.tsx`). Calling `use(params)` directly inside the client page suspended and never resolved under RTL in this workspace (npm workspace hoisting can produce duplicate `react` copies, a known cause of exactly this symptom) — the Server-wrapper split sidesteps it entirely and is also the more idiomatic Next 16 shape for a page that needs both the route param and client-side hooks. Apply the same split to the remaining `[draftId]`/`[partId]` screens.
+- **Three `react-hooks/set-state-in-effect` lint errors** (a stricter React 19 lint rule than most training data will know) came from the standard "read browser-only state after mount, to dodge an SSR hydration mismatch" idiom — `useEffect(() => setState(readBrowserThing()))`. Real fixes, not suppressions: moved each into either the existing Zustand `hydrate()`/`hydrated` pattern (already used by `useIntakeStore`; added the same shape to `useAuthSession.restored` and a new `useTenantStore`) or `useSyncExternalStore` (`navigator.onLine` in `SyncStatusBar`, which is the React-team-blessed tool for exactly this). Prefer this pattern over ad hoc `useEffect`+`useState` for any future browser-only reads.
 
 ## Phase 4 — AI Orchestration Pipeline
 - [ ] BullMQ + Redis wiring, concurrency capped to Gemini rate limit
