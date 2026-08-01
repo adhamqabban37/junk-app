@@ -20,7 +20,7 @@ describe('GeminiService', () => {
   function makeService(fetchImpl: typeof fetch): GeminiService {
     const config = new ConfigService({
       GEMINI_API_KEY: 'test-key',
-      GEMINI_MODEL: 'gemini-3.5-flash',
+      GEMINI_MODEL: 'gemini-2.0-flash',
     });
     return new GeminiService(config, fetchImpl);
   }
@@ -62,7 +62,7 @@ describe('GeminiService', () => {
     await service.analyzePartImage(Buffer.from('fake-jpeg'), 'image/jpeg');
 
     const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toContain('gemini-3.5-flash');
+    expect(url).toContain('gemini-2.0-flash');
     expect(url).toContain('key=test-key');
     const body = JSON.parse(options.body as string) as {
       generationConfig: { responseMimeType: string };

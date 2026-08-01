@@ -20,6 +20,7 @@ import { Tenant } from '../src/database/entities/tenant.entity';
 import { User, UserRole } from '../src/database/entities/user.entity';
 import { Vehicle, CrushStatus } from '../src/database/entities/vehicle.entity';
 import { withTenantContext } from '../src/database/tenant-context';
+import { closeTestApp } from './close-test-app';
 
 // This test exercises the real BullMQ queue + worker end to end (upload ->
 // job enqueued -> AiAnalysisProcessor picks it up -> AiAnalysisService
@@ -126,7 +127,7 @@ describe('Parts image upload (e2e)', () => {
   afterAll(async () => {
     await dataSource.getRepository(Tenant).delete({ id: tenant.id });
     await dataSource.getRepository(PartTaxonomy).delete({ id: taxonomy.id });
-    await app.close();
+    await closeTestApp(app);
     await fs.rm(uploadDir, { recursive: true, force: true });
     delete process.env.UPLOAD_DIR;
   });

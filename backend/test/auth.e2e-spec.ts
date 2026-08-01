@@ -8,6 +8,7 @@ import { AppModule } from '../src/app.module';
 import { Tenant } from '../src/database/entities/tenant.entity';
 import { User, UserRole } from '../src/database/entities/user.entity';
 import { withTenantContext } from '../src/database/tenant-context';
+import { closeTestApp } from './close-test-app';
 
 // Force a tiny connection pool so the concurrent test below is guaranteed to
 // reuse physical connections across tenants — the exact scenario the Phase 2
@@ -106,7 +107,7 @@ describe('Auth (e2e)', () => {
     const tenantRepo = dataSource.getRepository(Tenant);
     await tenantRepo.delete({ id: tenantA.id });
     await tenantRepo.delete({ id: tenantB.id });
-    await app.close();
+    await closeTestApp(app);
   });
 
   it('manager login succeeds with correct credentials and fails with the wrong password', async () => {

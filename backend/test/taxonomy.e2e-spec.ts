@@ -9,6 +9,7 @@ import { PartTaxonomy } from '../src/database/entities/part-taxonomy.entity';
 import { Tenant } from '../src/database/entities/tenant.entity';
 import { User, UserRole } from '../src/database/entities/user.entity';
 import { withTenantContext } from '../src/database/tenant-context';
+import { closeTestApp } from './close-test-app';
 
 describe('Taxonomy (e2e)', () => {
   let app: INestApplication;
@@ -61,7 +62,7 @@ describe('Taxonomy (e2e)', () => {
     await dataSource
       .getRepository(PartTaxonomy)
       .delete({ id: taxonomyItem.id });
-    await app.close();
+    await closeTestApp(app);
   });
 
   it('rejects unauthenticated requests', async () => {

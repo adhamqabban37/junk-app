@@ -19,7 +19,17 @@ export class PartsService {
     private readonly storage: LocalFileStorage,
     @InjectQueue(AI_ANALYSIS_QUEUE)
     private readonly aiQueue: Queue<AiAnalysisJobData>,
-  ) {}
+  ) {
+    // Queue is an EventEmitter -- an unlistened 'error' event is a Node
+    // crash, not just a dropped log line. See AiAnalysisProcessor's
+    // matching Worker-side listener for the full explanation (this fires
+    // both on real transient Redis blips and reliably during app shutdown).
+    this.aiQueue.on('error', (error) => {
+      if (process.env.NODE_ENV !== 'test') {
+        console.error('[PartsService] queue error', error);
+      }
+    });
+  }
 
   async addImage(
     tenantId: string,

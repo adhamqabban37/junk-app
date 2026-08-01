@@ -47,4 +47,19 @@ export class AiAnalysisProcessor extends WorkerHost {
       );
     }
   }
+
+  // BullMQ Workers are EventEmitters -- an 'error' event with zero
+  // listeners is a Node-level unhandled-error crash, not just a log line.
+  // This fires for transient connection blips in real operation, and
+  // reliably fires during app shutdown too (the worker's blocking Redis
+  // connection reporting itself closed while a blocking read was still
+  // in flight) -- without this listener that shutdown-time error had no
+  // handler and crashed whatever else was running in the process at that
+  // moment (e.g. a completely unrelated Jest test file mid-run).
+  @OnWorkerEvent('error')
+  onError(error: Error): void {
+    if (process.env.NODE_ENV !== 'test') {
+      console.error('[AiAnalysisProcessor] worker error', error);
+    }
+  }
 }

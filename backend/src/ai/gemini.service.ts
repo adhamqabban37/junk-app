@@ -23,6 +23,12 @@ confidence reflects how certain you are in this grade given image quality.`;
  * Thin wrapper around Gemini's generateContent REST API (no SDK dependency —
  * this is the only call site, and response_mime_type/inline image data are
  * both plain REST features). `fetchImpl` is injectable for tests.
+ *
+ * Default model is gemini-2.0-flash, confirmed live-reachable (auth + model
+ * resolution both succeeded against the real API) — CLAUDE.md's "Gemini 3.5
+ * Flash / 3.1 Flash-Lite" naming doesn't correspond to any model this API
+ * actually serves; gemini-2.5-flash is confirmed live-deprecated for new
+ * users (404). Override via GEMINI_MODEL once a specific tier is decided.
  */
 @Injectable()
 export class GeminiService {
@@ -36,7 +42,7 @@ export class GeminiService {
     mimeType: string,
   ): Promise<GeminiPartAnalysis> {
     const apiKey = this.config.getOrThrow<string>('GEMINI_API_KEY');
-    const model = this.config.get<string>('GEMINI_MODEL') ?? 'gemini-3.5-flash';
+    const model = this.config.get<string>('GEMINI_MODEL') ?? 'gemini-2.0-flash';
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
     let response: Response;

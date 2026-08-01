@@ -20,7 +20,7 @@ import { Tenant } from '../src/database/entities/tenant.entity';
 import { Vehicle, CrushStatus } from '../src/database/entities/vehicle.entity';
 import { withTenantContext } from '../src/database/tenant-context';
 
-const MODEL_VERSION = 'gemini-3.5-flash';
+const MODEL_VERSION = 'gemini-2.0-flash';
 
 class FakeGeminiService {
   response: {

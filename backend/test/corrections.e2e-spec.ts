@@ -18,6 +18,7 @@ import { Tenant } from '../src/database/entities/tenant.entity';
 import { User, UserRole } from '../src/database/entities/user.entity';
 import { Vehicle, CrushStatus } from '../src/database/entities/vehicle.entity';
 import { withTenantContext } from '../src/database/tenant-context';
+import { closeTestApp } from './close-test-app';
 
 describe('Corrections (e2e)', () => {
   let app: INestApplication;
@@ -110,7 +111,7 @@ describe('Corrections (e2e)', () => {
           tenantId: tenant.id,
           partId: part.id,
           partImageId: partImage.id,
-          modelVersion: 'gemini-3.5-flash',
+          modelVersion: 'gemini-2.0-flash',
           grade: AiGrade.B,
           damageCodes: ['scratch'],
           confidence: 0.7,
@@ -123,7 +124,7 @@ describe('Corrections (e2e)', () => {
   afterAll(async () => {
     await dataSource.getRepository(Tenant).delete({ id: tenant.id });
     await dataSource.getRepository(PartTaxonomy).delete({ id: taxonomy.id });
-    await app.close();
+    await closeTestApp(app);
   });
 
   async function loginManager(): Promise<string> {

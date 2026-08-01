@@ -73,13 +73,37 @@ Also fixed along the way:
   - A synchronous one-time capability check (`use-camera.ts`'s "does `getUserMedia` exist") became a lazy initializer too; the actual async `getUserMedia().then()/.catch()` calls were already fine as-is — the rule only flags synchronous `setState` in the effect body, not calls inside async callbacks, which is the documented correct "subscribe, then update when the external thing resolves" shape.
 - **CORS was not enabled on the backend** (`backend/src/main.ts`) until caught while smoke-testing the flow locally — the PWA frontend is always a different origin from this API (different port in dev, different subdomain in any real deployment), so every browser request would otherwise be silently blocked. Fixed via `app.enableCors()`, configurable through an optional `CORS_ORIGIN` env var (comma-separated allowlist; defaults to allow-all).
 
-## Phase 4 — AI Orchestration Pipeline
-- [ ] BullMQ + Redis wiring, concurrency capped to Gemini rate limit
-- [ ] Gemini Vision integration w/ `response_mime_type: application/json` + Zod validation
-- [ ] Idempotency key on AIAnalysis (`part_image_id` + `model_version`)
-- [ ] Graceful degradation: exhausted retries → Part flips to "needs manual grading"
-- [ ] AIAnalysis + HumanCorrection persistence
-- [ ] **Acceptance verified:** job enqueue → AIAnalysis write; retry does not duplicate; malformed JSON rejected, not stored; simulated outage produces manually-gradable Part
+## Phase 4 — AI Orchestration Pipeline ✅ built, live Gemini call unverified (2026-08-01)
+- [x] BullMQ + Redis wiring, concurrency capped to Gemini rate limit (`AI_QUEUE_CONCURRENCY`, conservative default of 2 — Gemini's exact rate limit for this project's plan tier isn't pinned down yet, see blocker below)
+- [x] Gemini Vision integration w/ `response_mime_type: application/json` + Zod validation (`backend/src/ai/gemini.service.ts`, `gemini-response.schema.ts`) — no SDK dependency, plain REST
+- [x] Idempotency key on AIAnalysis (`part_image_id` + `model_version`) — unique DB index from Phase 1 plus a pre-check in `AiAnalysisService` that skips a redundant Gemini call entirely on retry
+- [x] Graceful degradation: exhausted retries → Part flips to `needs_manual_grading` (`AiAnalysisProcessor.onFailed`, only on the *last* attempt, not every transient one)
+- [x] AIAnalysis + HumanCorrection persistence (`POST /ai-analyses/:id/corrections`, manager/owner only)
+- [x] **Acceptance verified via tests:** job enqueue → AIAnalysis write (real BullMQ round trip in `parts.e2e-spec.ts`); retry does not duplicate (`ai-analysis.e2e-spec.ts`); malformed/schema-invalid Gemini JSON rejected, never stored (`gemini.service.spec.ts`, `ai-analysis.e2e-spec.ts`); simulated outage produces a manually-gradable Part (`ai-analysis.e2e-spec.ts`, `ai-analysis.processor.spec.ts`)
+- [ ] **Live Gemini call NOT verified** — see blocker below
+
+### Blocker: Gemini API quota is 0 on the connected Google Cloud project
+`GEMINI_API_KEY` is saved in `backend/.env` (gitignored). Verified so far, against the real API:
+- The key authenticates correctly (project `391327712385`).
+- The Gemini API had to be enabled on that project via the GCP console — done mid-session.
+- **CLAUDE.md's "Gemini 3.5 Flash / 3.1 Flash-Lite" model names don't exist in the real API.** Live-checked the actual model list: `gemini-2.5-flash` is deprecated for new users (404), `gemini-2.0-flash` is valid and reachable. Code default corrected to `gemini-2.0-flash` (override via `GEMINI_MODEL`) in `gemini.service.ts` and `ai-analysis.service.ts`.
+- A real `generateContent` call against `gemini-2.0-flash`, built with the exact request shape `GeminiService` sends (inline base64 JPEG, `responseMimeType: application/json`), gets a well-formed `429 RESOURCE_EXHAUSTED` with `limit: 0` on every free-tier quota metric for that project. This is a genuine zero-quota project state, not a transient rate limit — the project needs a billing account attached (or a different quota tier) before any call will succeed. That's a Google Cloud Console action only you can take, same as the earlier "enable the API" step.
+- Everything else about the integration (auth, model resolution, request/response contract) is now confirmed working against the live API; only the final "does a real image get graded" call remains unverified.
+
+### Test-infrastructure note: flaky e2e teardown (partially fixed, not fully eliminated)
+Bootstrapping the full app (`AppModule`) in multiple e2e spec files, run sequentially in one Jest process (`--runInBand`, required since Phase 4 — see below), occasionally produced `Unhandled error: Connection is closed` crashes attributed to whichever spec file happened to be running when a stray async error fired — sometimes a completely unrelated file with no BullMQ code of its own (e.g. `rls-isolation.e2e-spec.ts`), confirming this is cross-file bleed, not a bug local to one file.
+
+Root cause: BullMQ's `Worker` keeps a dedicated blocking Redis connection (for its internal blocking read) that doesn't necessarily finish unblocking by the time `app.close()`'s promise resolves; the connection can throw an unhandled `'error'` event asynchronously afterward, once a different spec file's app has already started booting.
+
+Fixed, in order of what actually helped:
+1. `GeminiService`'s `fetchImpl: typeof fetch = fetch` constructor parameter (a default-value pattern used throughout this codebase for test injection) broke Nest's DI once it was provided through a real module — Nest tries to resolve every constructor parameter as a token regardless of default values. Fixed with `@Optional()`. This alone was the cause of an early, worse failure mode (a misleading `DriverPackageNotInstalledError: pg` that was actually an orphaned retry loop from a *different* provider's partial DI failure).
+2. Passing BullMQ's Redis connection as a pre-built `IORedis` instance meant BullMQ wouldn't close it on shutdown (it only closes connections it created itself) — every e2e run hung indefinitely after finishing. Fixed by passing connection *options* instead (`queues/redis-connection.ts`), letting BullMQ own the connection lifecycle.
+3. `AiModule` redundantly called `BullModule.registerQueue()` even though `@Processor`/`WorkerHost` doesn't need it (it builds its own `Worker` from the root connection config) — this created a second, entirely unused `Queue` producer with its own connection and no error listener. Removed.
+4. Added explicit `'error'` listeners on both the `Worker` (`AiAnalysisProcessor.onError`) and the one `Queue` actually in use (`PartsService`'s constructor) — EventEmitters with zero listeners for `'error'` crash the process, not just log a line; this is correct production hygiene regardless of the test flake.
+5. `--runInBand` added to `test:e2e` (was already needed independently — running e2e spec files in parallel Jest workers meant every file's `AiAnalysisProcessor` competed for jobs on the same real Redis queue, so a job enqueued by `parts.e2e-spec.ts` could get grabbed by a different file's worker with a non-mocked `GeminiService`).
+6. `test/close-test-app.ts`: every e2e spec's `afterAll` now explicitly awaits `processor.worker.close()` (graceful, no force flag) before `app.close()`, giving BullMQ's own shutdown sequence a chance to settle that blocking connection inside the owning file's teardown window. **Tried `close(true)` (force) first — under some timing it produced a native access violation (Windows exit code 3221226505) instead of just failing a test, i.e. forcing the socket closed mid-blocking-read is a real crash risk, not just noise. Switched to graceful `close()`.**
+
+Net effect: failure rate dropped from roughly 1-in-2 runs to roughly 1-in-8 runs across ~15 repeated full-suite runs while diagnosing this. The residual flake looks like Windows-specific ioredis/BullMQ socket-teardown timing under rapid sequential Nest app boot/teardown — a pattern that only exists in this multi-file e2e run, never in real operation (a production app boots once and runs continuously). Stopped chasing it further past this point; if it becomes a real CI problem, the next lever to pull is investigating BullMQ's own internals for the blocking connection (blocked this session by a permission restriction on reading `node_modules` source directly) or splitting e2e specs that need a full app boot from those that don't (`rls-isolation` and `ai-analysis` already don't).
 
 ## Phase 5 — Desktop Manager Dashboard
 - [ ] Global Dashboard
