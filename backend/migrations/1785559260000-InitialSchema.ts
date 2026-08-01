@@ -4,7 +4,9 @@ export class InitialSchema1785559260000 implements MigrationInterface {
   name = "InitialSchema1785559260000";
 
   public async up(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`CREATE EXTENSION IF NOT EXISTS vector`);
+    // `vector` extension is created by docker/postgres-init/00-extensions.sql
+    // as the bootstrap superuser — this migration runs as the non-superuser
+    // junkyard_app role and can't CREATE EXTENSION itself (see 01-app-role.sql).
 
     await queryRunner.query(`CREATE TYPE "user_role" AS ENUM ('worker', 'manager', 'owner')`);
     await queryRunner.query(
@@ -204,7 +206,12 @@ export class InitialSchema1785559260000 implements MigrationInterface {
     // variable set per-request/transaction (see tenant-context.ts). The
     // `true` second arg to current_setting means "return NULL if unset"
     // rather than erroring, so a connection with no tenant context set sees
-    // zero rows (default-deny) instead of leaking or crashing.
+    // zero rows (default-deny) instead of leaking or crashing. NULLIF(...,
+    // '') is required too: once a custom GUC placeholder like app.tenant_id
+    // has been SET LOCAL'd at least once on a backend connection, it resets
+    // to '' (not NULL) after the transaction ends — and with connection
+    // pooling, a later request with no tenant context can land on that same
+    // physical connection, so the cast must tolerate '' as well as NULL.
     const tenantScopedTables = [
       "users",
       "vehicles",
@@ -222,8 +229,8 @@ export class InitialSchema1785559260000 implements MigrationInterface {
       await queryRunner.query(`ALTER TABLE "${table}" FORCE ROW LEVEL SECURITY`);
       await queryRunner.query(`
         CREATE POLICY "tenant_isolation" ON "${table}"
-        USING ("tenant_id" = current_setting('app.tenant_id', true)::uuid)
-        WITH CHECK ("tenant_id" = current_setting('app.tenant_id', true)::uuid)
+        USING ("tenant_id" = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+        WITH CHECK ("tenant_id" = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
       `);
     }
     // part_taxonomies is shared reference data across all tenants — no RLS.

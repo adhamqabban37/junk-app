@@ -12,7 +12,7 @@ Tracks completion against `docs/BUILD_PLAN.md`. Check boxes as each phase's acce
 - [x] README with documented clone-to-running-app setup sequence
 - [x] **Acceptance verified:** both dev servers boot (verified directly — `npm run dev` via cmd.exe wrapper loses buffered output on abrupt kill on Windows, direct `next`/`nest` invocation confirms clean startup), `npm test` passes both workspaces, `docker-compose up` brings up healthy Postgres+Redis, README sequence works up through Phase 0 (migrate/seed steps land in Phase 1)
 
-## Phase 1 — Data Layer 🚧 IN PROGRESS (paused 2026-08-01, mid-fix)
+## Phase 1 — Data Layer ✅ (2026-08-01)
 - [x] TypeORM entities for all 11 tenant-scoped entities + Tenant + PartTaxonomy (`backend/src/database/entities/*.entity.ts`)
 - [x] Migration written: `backend/migrations/1785559260000-InitialSchema.ts` — all tables, enums, indexes, FKs, RLS policies (`ENABLE` + `FORCE ROW LEVEL SECURITY` + `tenant_isolation` policy per tenant-scoped table)
 - [x] `withTenantContext()` helper (`backend/src/database/tenant-context.ts`) — sets `SET LOCAL app.tenant_id` inside a transaction (UUID-validated, since SET doesn't accept bind params)
@@ -20,22 +20,18 @@ Tracks completion against `docs/BUILD_PLAN.md`. Check boxes as each phase's acce
 - [x] Dev seed (`backend/src/database/seeds/dev.seed.ts`) — demo tenant + PIN worker + email/password manager
 - [x] `DatabaseModule` wired into `AppModule`
 - [x] RLS isolation e2e test written: `backend/test/rls-isolation.e2e-spec.ts` (SELECT/INSERT/UPDATE + no-context default-deny)
-- [ ] pgvector extension enabled — **BLOCKED, see below**
-- [ ] Migration actually applied against the corrected (non-superuser) role
-- [ ] Dev seed re-run against the corrected role
-- [ ] RLS isolation e2e test passing
-- [ ] **Acceptance NOT yet verified**
+- [x] pgvector extension enabled
+- [x] Migration applied against the corrected (non-superuser) `junkyard_app` role
+- [x] Dev seed re-run against the corrected role
+- [x] RLS isolation e2e test passing (4/4)
+- [x] **Acceptance verified:** `npm run migrate`, `npm run seed:dev`, `npm run test:e2e` (rls-isolation, 4/4 passing) and `npm test` (unit) all green in `backend/`
 
-### 🔴 Current blocker (exact next step)
-First run of the RLS e2e test revealed the real bug: RLS was **not being enforced at all**. Root cause — `docker-compose.yml`'s `POSTGRES_USER` (`junkyard`) is always created as a Postgres **superuser** by the official image's bootstrap, and Postgres never applies row-level security to superusers, even with `FORCE ROW LEVEL SECURITY`. Fix in progress:
-1. Added `docker/postgres-init/01-app-role.sql` — creates a non-superuser role `junkyard_app`, granted DB + schema privileges. Confirmed via `\du` that it now exists correctly (no superuser attributes).
-2. Updated `backend/.env` / `.env.example` `DATABASE_URL` to connect as `junkyard_app` instead of `junkyard`.
-3. Recreated the Postgres container+volume so the init script actually ran (`docker compose down -v && docker compose up -d postgres redis`) — done, confirmed healthy.
-4. Ran `npm run migrate` as `junkyard_app` — **fails** on the very first statement: `CREATE EXTENSION IF NOT EXISTS vector` → `ERROR: 42501: Must be superuser to create this extension` (this pgvector image build doesn't have it marked "trusted", so a non-superuser can't install it).
+### Resolved blockers (fixed 2026-08-01)
+1. **RLS silently not enforced.** `docker-compose.yml`'s `POSTGRES_USER` (`junkyard`) is always created as a Postgres superuser by the official image's bootstrap, and Postgres never applies row-level security to superusers, even with `FORCE ROW LEVEL SECURITY`. Fixed by adding `docker/postgres-init/01-app-role.sql` (non-superuser role `junkyard_app`, granted DB + schema privileges) and pointing `DATABASE_URL` at it.
+2. **`CREATE EXTENSION vector` needs superuser**, but the app now connects as non-superuser `junkyard_app`. Fixed by adding `docker/postgres-init/00-extensions.sql` (runs before `01-app-role.sql`, as the bootstrap superuser) and removing the `CREATE EXTENSION` call from the migration itself.
+3. **`invalid input syntax for type uuid: ""` on the no-context RLS test.** Root cause: `app.tenant_id` is an undeclared custom GUC placeholder. Once `SET LOCAL app.tenant_id = '...'` runs at least once on a physical backend connection, Postgres resets it to `''` (not NULL) once the transaction ends — and with TypeORM's connection pool, a later query with no tenant context can land on that same reused connection, so `current_setting(...)::uuid` throws instead of returning NULL. Fixed by wrapping every RLS policy's `current_setting` call in `NULLIF(..., '')` before the `::uuid` cast, in both `USING` and `WITH CHECK` clauses.
 
-**Next step:** move `CREATE EXTENSION IF NOT EXISTS vector;` (and `uuid-ossp` if still needed) out of the TypeORM migration and into `docker/postgres-init/01-app-role.sql` (or a `00-extensions.sql` run before it), so it executes once as the bootstrap superuser during container init. The migration's own `CREATE EXTENSION IF NOT EXISTS vector` line can stay as a harmless no-op guard, or be removed. After that: re-run `npm run migrate`, `npm run seed:dev`, then `npm run test:e2e` (both in `backend/`) and confirm `rls-isolation.e2e-spec.ts` passes all 5 cases before checking off this phase.
-
-Also fixed along the way (already applied, don't redo):
+Also fixed along the way:
 - Test's cross-tenant VIN string was 19 chars against a `varchar(17)` column, masking the real RLS check with a length error — fixed to a 17-char value.
 - `entities/index.ts` barrel re-exports enums alongside entity classes, which TypeORM's `entities:` array rejects (`Object.values(entities)` broke `data-source.ts`/`database.module.ts`) — fixed by adding `backend/src/database/entities.list.ts` with an explicit `ENTITIES` array of just the classes; both files now import from there instead.
 
