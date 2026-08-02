@@ -186,6 +186,24 @@ describe('Corrections (e2e)', () => {
     });
   });
 
+  it('applies the corrected grade onto the AI analysis itself, so Inventory/CSV export show the corrected value, not the AI original', async () => {
+    const token = await loginManager();
+
+    // Prior test already moved this analysis's grade to A -- correct it to
+    // C here so this test proves the write actually happens rather than
+    // coincidentally matching an already-correct value.
+    await request(app.getHttpServer())
+      .post(`/ai-analyses/${analysis.id}/corrections`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ field: 'grade', correctedValue: 'C' })
+      .expect(201);
+
+    const updated = await withTenantContext(dataSource, tenant.id, (m) =>
+      m.getRepository(AiAnalysis).findOneOrFail({ where: { id: analysis.id } }),
+    );
+    expect(updated.grade).toBe(AiGrade.C);
+  });
+
   it('404s when the AI analysis does not exist', async () => {
     const token = await loginManager();
     await request(app.getHttpServer())
