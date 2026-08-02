@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Controller,
   Get,
+  Header,
   HttpCode,
   HttpStatus,
   Param,
@@ -55,6 +56,18 @@ export class PartsController {
       query.page,
       query.pageSize,
     );
+  }
+
+  // Declared before ':id' -- Nest matches routes in registration order, and
+  // 'export.csv' would otherwise fall into the :id/ParseUUIDPipe handler
+  // and 400 as an invalid UUID.
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.MANAGER, UserRole.OWNER)
+  @Header('Content-Type', 'text/csv')
+  @Header('Content-Disposition', 'attachment; filename="inventory-export.csv"')
+  @Get('export.csv')
+  exportCsv(@CurrentUser() user: JwtPayload): Promise<string> {
+    return this.partsService.exportCsv(user.tenantId);
   }
 
   @UseGuards(RolesGuard)

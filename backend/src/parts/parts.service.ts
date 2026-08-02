@@ -13,6 +13,7 @@ import { PartImage } from '../database/entities/part-image.entity';
 import { PartTaxonomy } from '../database/entities/part-taxonomy.entity';
 import { Vehicle } from '../database/entities/vehicle.entity';
 import { withTenantContext } from '../database/tenant-context';
+import { toCsv } from './csv';
 import { LocalFileStorage } from '../storage/local-file-storage';
 
 export interface PartListResult {
@@ -275,6 +276,93 @@ export class PartsService {
       await manager
         .getRepository(Part)
         .update({ id: partId }, { status: PartStatus.APPROVED });
+    });
+  }
+
+  /** Only APPROVED/LISTED parts are marketplace-ready -- a part still mid-review or newly intaken has no business in a syndication export. */
+  async exportCsv(tenantId: string): Promise<string> {
+    return withTenantContext(this.dataSource, tenantId, async (manager) => {
+      const parts = await manager.getRepository(Part).find({
+        where: {
+          tenantId,
+          status: In([PartStatus.APPROVED, PartStatus.LISTED]),
+        },
+        order: { createdAt: 'ASC' },
+      });
+
+      const vehicleIds = [...new Set(parts.map((p) => p.vehicleId))];
+      const taxonomyIds = [...new Set(parts.map((p) => p.taxonomyId))];
+      const partIds = parts.map((p) => p.id);
+
+      // Sequential -- see the Promise.all note on list()/detail() above.
+      const vehicles = vehicleIds.length
+        ? await manager.getRepository(Vehicle).findBy({ id: In(vehicleIds) })
+        : [];
+      const taxonomies = taxonomyIds.length
+        ? await manager
+            .getRepository(PartTaxonomy)
+            .findBy({ id: In(taxonomyIds) })
+        : [];
+      const analyses = partIds.length
+        ? await manager.getRepository(AiAnalysis).find({
+            where: { partId: In(partIds) },
+            order: { createdAt: 'DESC' },
+          })
+        : [];
+
+      const vehicleById = new Map(
+        vehicles.map((v): [string, Vehicle] => [v.id, v]),
+      );
+      const taxonomyById = new Map(
+        taxonomies.map((t): [string, PartTaxonomy] => [t.id, t]),
+      );
+      const latestAnalysisByPart = new Map<string, AiAnalysis>();
+      for (const analysis of analyses) {
+        if (!latestAnalysisByPart.has(analysis.partId)) {
+          latestAnalysisByPart.set(analysis.partId, analysis);
+        }
+      }
+
+      const header = [
+        'id',
+        'vin',
+        'title',
+        'description',
+        'grade',
+        'damage_codes',
+        'confidence',
+        'status',
+        'price',
+      ];
+      const rows = parts.map((part) => {
+        const vehicle = vehicleById.get(part.vehicleId);
+        const taxonomy = taxonomyById.get(part.taxonomyId);
+        const analysis = latestAnalysisByPart.get(part.id) ?? null;
+        const title = [
+          vehicle?.year,
+          vehicle?.make,
+          vehicle?.model,
+          taxonomy?.name,
+        ]
+          .filter((v) => v !== null && v !== undefined && v !== '')
+          .join(' ');
+        const description = analysis
+          ? `Grade ${analysis.grade}. Damage: ${analysis.damageCodes.length ? analysis.damageCodes.join(', ') : 'none noted'}.`
+          : 'Not yet AI-graded.';
+        return [
+          part.id,
+          vehicle?.vin ?? '',
+          title,
+          description,
+          analysis?.grade ?? '',
+          analysis?.damageCodes.join(';') ?? '',
+          analysis?.confidence != null ? String(analysis.confidence) : '',
+          part.status,
+          '', // price placeholder -- real pricing logic is out of MVP scope
+        ];
+      });
+
+      return toCsv(header, rows);
     });
   }
 }
