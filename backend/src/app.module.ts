@@ -2,6 +2,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AiModule } from './ai/ai.module';
+import { AnalyticsModule } from './analytics/analytics.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
@@ -33,6 +34,7 @@ import { VehiclesModule } from './vehicles/vehicles.module';
     SettingsModule,
     UsersModule,
     VehiclesModule,
+    AnalyticsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
