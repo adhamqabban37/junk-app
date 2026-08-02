@@ -6,33 +6,40 @@
  * EventEmitter from the Worker/Queue objects our own code listens on (see
  * node_modules/bullmq/dist/cjs/classes/redis-connection.js) -- can still
  * have its connect-time `initializing` promise reject after teardown, with
- * no listener left on that specific internal object. A Node EventEmitter
- * with zero 'error' listeners throws synchronously instead of just logging,
- * which crashes the entire Jest process (not just the current test) and
- * takes down whichever spec happens to be running by then -- confirmed via
- * CI (GitHub Actions, Linux) hitting this deterministically on
- * auth.e2e-spec.ts's concurrent-request test, matching the same failure
- * signature documented from local Windows runs (docs/PROGRESS.md's Phase 4
- * "Test-infrastructure note").
+ * no listener left on that specific internal object. Node wraps a
+ * zero-listener EventEmitter 'error' in its own ERR_UNHANDLED_ERROR (the
+ * original error lands in `.context`, not `.message`) and throws it
+ * synchronously, which crashes the entire Jest process (not just the
+ * current test) and takes down whichever spec happens to be running by
+ * then -- confirmed via CI (GitHub Actions, Linux) hitting this
+ * deterministically, matching the same failure signature documented from
+ * local Windows runs (docs/PROGRESS.md's Phase 4 "Test-infrastructure
+ * note").
  *
  * This is BullMQ vendor-internals teardown timing, not an app bug -- by the
  * time it fires, every already-completed spec file has already reported its
- * real pass/fail. Downgrading it to a warning here keeps that real signal
- * intact without crashing the whole suite; anything else still crashes
- * loudly, since only this exact known signature is swallowed.
+ * real pass/fail. Deliberately silent (no console output) for the matched
+ * case: Jest fails a run for *any* console output logged after all test
+ * suites finish ("Cannot log after tests are done"), so even a warning
+ * here would itself become the failure it's trying to avoid. Anything else
+ * still crashes loudly, since only this exact known signature is matched.
  */
 process.on('uncaughtException', (error: unknown) => {
-  const isKnownBullMqTeardownRace =
+  const context =
     error instanceof Error &&
-    error.message === 'Connection is closed.' &&
+    (error as Error & { code?: string; context?: unknown }).code ===
+      'ERR_UNHANDLED_ERROR'
+      ? (error as Error & { context?: unknown }).context
+      : undefined;
+
+  const isKnownBullMqTeardownRace =
+    context instanceof Error &&
+    context.message === 'Connection is closed.' &&
+    error instanceof Error &&
     error.stack?.includes('bullmq') &&
     error.stack?.includes('redis-connection');
 
   if (isKnownBullMqTeardownRace) {
-    console.warn(
-      '[test/setup-e2e] Ignored known BullMQ RedisConnection teardown race:',
-      error.message,
-    );
     return;
   }
 
@@ -41,7 +48,6 @@ process.on('uncaughtException', (error: unknown) => {
   // one matched above -- so anything else must still fail the run exactly
   // as it would have with no listener installed, rather than silently
   // continuing.
-
   console.error(error);
   process.exit(1);
 });
