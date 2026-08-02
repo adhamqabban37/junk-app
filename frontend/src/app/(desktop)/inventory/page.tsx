@@ -113,7 +113,7 @@ export default function InventoryPage() {
             <span role="columnheader">Status</span>
             <span role="columnheader">Grade</span>
           </div>
-          <div ref={scrollRef} className="max-h-[600px] overflow-auto">
+          <div ref={scrollRef} data-testid="inventory-scroll-container" className="max-h-[600px] overflow-auto">
             <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
               {virtualizer.getVirtualItems().map((virtualRow) => {
                 const item = rows[virtualRow.index];
