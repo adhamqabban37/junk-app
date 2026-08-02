@@ -119,10 +119,11 @@ Net effect: failure rate dropped from roughly 1-in-2 runs to roughly 1-in-8 runs
 - [x] **Bug found + fixed during acceptance verification:** `CorrectionsService.recordCorrection()` only ever wrote the `HumanCorrection` log row — it never applied the corrected value onto the underlying `AiAnalysis`, so a manager's grade override in the Review Queue would approve a part whose Inventory listing and CSV export still showed the AI's original (possibly wrong) grade, silently failing the acceptance line below. Fixed: the corrected value is now applied onto `AiAnalysis` (grade/confidence/damage_codes) after the original value is logged for the Moat — regression-tested in `corrections.e2e-spec.ts`.
 - [x] **Acceptance verified:** review → correct → approve → visible in Inventory → CSV export contains it, confirmed via the composition of `corrections.e2e-spec.ts` (correction applies to the analysis), `parts-listing.e2e-spec.ts` (`/parts/:id/approve` moves status, corrected grade shows in list/detail), and `parts-export.e2e-spec.ts` (approved parts + their current grade appear in the CSV); low-confidence items visually distinct (`review-queue/page.test.tsx`, `needsReview()`). Not re-verified live in a browser this session (Phase 3's precedent — user explicitly deferred live browser walkthroughs this session). Full backend suite: 15 unit + 58 e2e passing. Full frontend suite: 142 tests across 30 files passing. Both workspaces typecheck and lint clean (`tsc --noEmit`, `eslint --quiet`).
 
-## Phase 6 — Integrations (MVP scope)
-- [ ] NHTSA error fallback to manual entry
-- [ ] Finalized CSV export format
-- [ ] **Acceptance verified:** VIN decode failure falls back gracefully; CSV opens correctly with AI-generated fields
+## Phase 6 — Integrations (MVP scope) ✅ (2026-08-01)
+- [x] NHTSA error fallback to manual entry — already built in Phase 3 (`lib/nhtsa.ts`'s `VinDecodeError`, caught non-blockingly in `vin-page-client.tsx`, Vehicle screen renders blank editable fields when `draft.decoded` is null). Re-verified this session: `vin-page-client` test "still saves the VIN and navigates onward when NHTSA decode fails" covers both the network-failure and undecodable-VIN (HTTP 200, no make/model) cases.
+- [x] Finalized CSV export format — already built in Phase 5 (`parts/csv.ts`, `GET /parts/export.csv`): `id,vin,title,description,grade,damage_codes,confidence,status,price` (price is an intentional MVP placeholder). `parts-export.e2e-spec.ts` verifies correct quoting of a comma-containing field and that only approved/listed parts are included.
+- [x] eBay/Shopify/ACES direct integrations explicitly deferred (Marketplace screen states this) — not built, per BUILD_PLAN's own MVP scope.
+- [x] **Acceptance verified:** VIN decode failure falls back gracefully to manual entry (test above); CSV opens correctly with AI-generated title/description/grade (`parts-export.e2e-spec.ts`).
 
 ## Phase 7 — Polish & Hardening
 - [ ] PWA manifest/Workbox strategies
