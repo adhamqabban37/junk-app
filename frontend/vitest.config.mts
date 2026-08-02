@@ -14,6 +14,11 @@ export default defineConfig({
     // tests. 15s gives headroom without letting a genuinely hung test run
     // forever.
     testTimeout: 15000,
+    // e2e/*.spec.ts use Playwright's own test()/test.describe(), which
+    // crashes if Vitest tries to execute it under its own runner instead
+    // (found via CI's first run: Vitest's default include glob matches
+    // "*.spec.ts" anywhere, not just inside src/).
+    exclude: ["**/node_modules/**", "**/e2e/**"],
   },
   resolve: {
     alias: {
