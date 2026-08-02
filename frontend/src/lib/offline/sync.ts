@@ -76,9 +76,9 @@ export async function syncPendingDrafts(client: SyncClient): Promise<void> {
  * listener is the primary, universally-supported mechanism. Background Sync
  * API registration is attempted best-effort on top of it — it isn't
  * supported everywhere (e.g. Safari) and needs an installed service worker,
- * so failure here is silently non-fatal. The actual service worker file and
- * full Workbox caching strategy are Phase 7 scope (see docs/PROGRESS.md);
- * this only registers the sync tag if a worker already happens to be ready.
+ * so failure here is silently non-fatal. `registerServiceWorker()`
+ * (`lib/pwa.ts`, registered in `(mobile)/layout.tsx`) must have already run
+ * for `navigator.serviceWorker.ready` to resolve at all.
  */
 export function registerSyncTriggers(client: SyncClient): () => void {
   const handleOnline = () => {

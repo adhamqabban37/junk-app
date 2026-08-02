@@ -6,6 +6,7 @@ import { SyncStatusBar } from "@/components/mobile/sync-status-bar";
 import { apiBaseUrl } from "@/lib/api";
 import { useAuthSession } from "@/lib/auth-session";
 import { createFetchSyncClient, registerSyncTriggers } from "@/lib/offline/sync";
+import { registerServiceWorker } from "@/lib/pwa";
 
 const PUBLIC_PATHS = new Set(["/login"]);
 
@@ -19,6 +20,12 @@ export default function MobileLayout({ children }: { children: React.ReactNode }
   useEffect(() => {
     restore();
   }, [restore]);
+
+  // Unauthenticated too: the app shell (including /login) must still be
+  // launchable offline once installed, before any session exists.
+  useEffect(() => {
+    registerServiceWorker();
+  }, []);
 
   // Registered once a session exists, unregistered on logout — the sync
   // client reads the token fresh on every call rather than closing over it,
