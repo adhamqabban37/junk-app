@@ -2,6 +2,29 @@
 
 Tracks completion against `docs/BUILD_PLAN.md`. Check boxes as each phase's acceptance criteria are verified.
 
+## Where things stand (end of session, 2026-08-02) — read this first next time
+
+**All 7 BUILD_PLAN phases are complete**, plus a post-Phase-7 hardening pass. Every gap flagged along the way has since been closed with real evidence — there is no known open gap in the plan itself. Full detail for each phase is below; this section is just the fast-resume summary.
+
+**To resume local dev:**
+```
+npm run db:up                 # Postgres + Redis (Docker)
+npm run dev:backend           # -> http://localhost:3001
+npm run dev:frontend          # -> http://localhost:3000
+```
+Both now boot cleanly together with zero manual port juggling (see "Post-Phase-7 — Environment hardening" below for why that wasn't always true).
+
+**What's actually left is not more building — it's using the app for real:**
+1. **Nobody has clicked through the app in a live browser this whole build.** Every screen is covered by Vitest/RTL + backend e2e tests, and the 3 new Playwright specs (`frontend/e2e/*.spec.ts`) exercise Inventory scrolling and PWA installability end-to-end — but a real human (or a Claude session with browser-tool permission) walking the actual golden path (worker: scan VIN → capture photos → queue for sync; manager: review AI grade → correct → approve → see it in Inventory → export CSV) has never happened. This was explicitly deferred by the user multiple times this session, not skipped by oversight. Worth doing once, at least manually.
+2. **Gemini AI calls have only been verified once, in Phase 4, when the API key was first enabled** (`docs/PROGRESS.md`'s Phase 4 entry). Worth a spot-check that grading still works — Gemini model names/versions are a moving target (`GEMINI_MODEL` env var already exists for this) and quota/billing can lapse.
+3. **Two design decisions were made unilaterally this session and never explicitly confirmed with the user** — low-risk, but worth knowing about:
+   - Backend's default port changed from 3000 → 3001 (`backend/src/main.ts`) to stop colliding with the frontend. If anything external (a script, a bookmark, a proxy config) assumed 3001 was the port *before* this session, double check — otherwise this is just now the honest, working default.
+   - `@ducanh2912/next-pwa` was removed (it silently did nothing under this project's Turbopack build) and replaced with a small hand-written `frontend/public/sw.js`. If there's ever a reason to reintroduce a Workbox-based build step, it would need `next build --webpack` (a real behavior change, not just a config tweak) since Turbopack doesn't support webpack plugins at all.
+4. **No CI pipeline exists yet.** Everything in this file was verified by running suites locally, by hand, this session. If this project graduates past solo/local development, wiring up the existing `npm test` / `npm run test:e2e` / `npm run lint` / `npm run build` commands into GitHub Actions (or similar) is the natural next infrastructure step — nothing about the test suites themselves needs to change to support it.
+5. **Deployment has never been discussed or attempted.** Everything so far is local-only (Docker Compose Postgres/Redis, `npm run dev:*`). Hosting, environment secrets in production, and a real Postgres instance are all still open questions whenever that becomes relevant.
+
+None of the above are blocking or broken — they're just the honest boundary of what "finished" means after a build-only session with no live browser and no production environment.
+
 ## Phase 0 — Scaffold ✅ (2026-07-31)
 - [x] npm workspaces for `/frontend` + `/backend`
 - [x] TypeScript strict mode both workspaces
