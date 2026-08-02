@@ -38,6 +38,7 @@ export interface PartListItem {
   } | null;
   photosCount: number;
   latestAnalysis: {
+    id: string;
     grade: string | null;
     damageCodes: string[];
     confidence: number | string | null;
@@ -222,6 +223,7 @@ export class PartsService {
       photosCount: photoCountByPart.get(part.id) ?? 0,
       latestAnalysis: analysis
         ? {
+            id: analysis.id,
             grade: analysis.grade,
             damageCodes: analysis.damageCodes,
             confidence: analysis.confidence,

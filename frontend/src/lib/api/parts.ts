@@ -9,6 +9,7 @@ export type PartStatus =
   | "sold";
 
 export interface PartLatestAnalysis {
+  id: string;
   grade: "A" | "B" | "C" | null;
   damageCodes: string[];
   confidence: number | string | null;
@@ -41,9 +42,7 @@ export interface PartDetail {
   taxonomyName: string | null;
   vehicle: { id: string; vin: string; make: string | null; model: string | null; year: number | null } | null;
   photos: Array<{ id: string; url: string }>;
-  latestAnalysis:
-    | (PartLatestAnalysis & { id: string; rawJson: Record<string, unknown> | null })
-    | null;
+  latestAnalysis: (PartLatestAnalysis & { rawJson: Record<string, unknown> | null }) | null;
 }
 
 export function listParts(
