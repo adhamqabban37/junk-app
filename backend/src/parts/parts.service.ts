@@ -2,15 +2,47 @@ import { randomUUID } from 'crypto';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, NotFoundException } from '@nestjs/common';
 import type { Queue } from 'bullmq';
-import { DataSource } from 'typeorm';
+import { DataSource, FindOptionsWhere, In } from 'typeorm';
 import {
   AI_ANALYSIS_QUEUE,
   AiAnalysisJobData,
 } from '../ai/ai-analysis.processor';
-import { Part } from '../database/entities/part.entity';
+import { AiAnalysis } from '../database/entities/ai-analysis.entity';
+import { Part, PartStatus } from '../database/entities/part.entity';
 import { PartImage } from '../database/entities/part-image.entity';
+import { PartTaxonomy } from '../database/entities/part-taxonomy.entity';
+import { Vehicle } from '../database/entities/vehicle.entity';
 import { withTenantContext } from '../database/tenant-context';
 import { LocalFileStorage } from '../storage/local-file-storage';
+
+export interface PartListResult {
+  items: PartListItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface PartListItem {
+  id: string;
+  status: PartStatus;
+  createdAt: Date;
+  taxonomyId: string;
+  taxonomyName: string | null;
+  vehicle: {
+    id: string;
+    vin: string;
+    make: string | null;
+    model: string | null;
+    year: number | null;
+  } | null;
+  photosCount: number;
+  latestAnalysis: {
+    grade: string | null;
+    damageCodes: string[];
+    confidence: number | string | null;
+    status: string;
+  } | null;
+}
 
 @Injectable()
 export class PartsService {
@@ -72,6 +104,177 @@ export class PartsService {
       );
 
       return partImage;
+    });
+  }
+
+  async list(
+    tenantId: string,
+    statuses: PartStatus[] | undefined,
+    page: number,
+    pageSize: number,
+  ): Promise<PartListResult> {
+    return withTenantContext(this.dataSource, tenantId, async (manager) => {
+      const where: FindOptionsWhere<Part> = { tenantId };
+      if (statuses?.length) {
+        where.status = In(statuses);
+      }
+
+      const [parts, total] = await manager.getRepository(Part).findAndCount({
+        where,
+        order: { createdAt: 'DESC' },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+      });
+
+      const partIds = parts.map((p) => p.id);
+      const vehicleIds = [...new Set(parts.map((p) => p.vehicleId))];
+      const taxonomyIds = [...new Set(parts.map((p) => p.taxonomyId))];
+
+      // Sequential, not Promise.all: these all share the one transactional
+      // client withTenantContext hands out, and a single Postgres
+      // connection can't run concurrent/interleaved queries (pg logs a
+      // deprecation warning today; a future pg major turns it into a hard
+      // error).
+      const vehicles = vehicleIds.length
+        ? await manager.getRepository(Vehicle).findBy({ id: In(vehicleIds) })
+        : [];
+      const taxonomies = taxonomyIds.length
+        ? await manager
+            .getRepository(PartTaxonomy)
+            .findBy({ id: In(taxonomyIds) })
+        : [];
+      const analyses = partIds.length
+        ? await manager.getRepository(AiAnalysis).find({
+            where: { partId: In(partIds) },
+            order: { createdAt: 'DESC' },
+          })
+        : [];
+      const photoCounts = partIds.length
+        ? await manager
+            .getRepository(PartImage)
+            .createQueryBuilder('img')
+            .select('img.partId', 'partId')
+            .addSelect('COUNT(*)', 'count')
+            .where('img.partId IN (:...partIds)', { partIds })
+            .groupBy('img.partId')
+            .getRawMany<{ partId: string; count: string }>()
+        : [];
+
+      const vehicleById = new Map(
+        vehicles.map((v): [string, Vehicle] => [v.id, v]),
+      );
+      const taxonomyById = new Map(
+        taxonomies.map((t): [string, PartTaxonomy] => [t.id, t]),
+      );
+      const latestAnalysisByPart = new Map<string, AiAnalysis>();
+      for (const analysis of analyses) {
+        if (!latestAnalysisByPart.has(analysis.partId)) {
+          latestAnalysisByPart.set(analysis.partId, analysis);
+        }
+      }
+      const photoCountByPart = new Map(
+        photoCounts.map((c): [string, number] => [c.partId, Number(c.count)]),
+      );
+
+      return {
+        items: parts.map((part) =>
+          this.toListItem(
+            part,
+            vehicleById,
+            taxonomyById,
+            latestAnalysisByPart,
+            photoCountByPart,
+          ),
+        ),
+        total,
+        page,
+        pageSize,
+      };
+    });
+  }
+
+  private toListItem(
+    part: Part,
+    vehicleById: Map<string, Vehicle>,
+    taxonomyById: Map<string, PartTaxonomy>,
+    latestAnalysisByPart: Map<string, AiAnalysis>,
+    photoCountByPart: Map<string, number>,
+  ): PartListItem {
+    const vehicle = vehicleById.get(part.vehicleId);
+    const taxonomy = taxonomyById.get(part.taxonomyId);
+    const analysis = latestAnalysisByPart.get(part.id) ?? null;
+    return {
+      id: part.id,
+      status: part.status,
+      createdAt: part.createdAt,
+      taxonomyId: part.taxonomyId,
+      taxonomyName: taxonomy?.name ?? null,
+      vehicle: vehicle
+        ? {
+            id: vehicle.id,
+            vin: vehicle.vin,
+            make: vehicle.make,
+            model: vehicle.model,
+            year: vehicle.year,
+          }
+        : null,
+      photosCount: photoCountByPart.get(part.id) ?? 0,
+      latestAnalysis: analysis
+        ? {
+            grade: analysis.grade,
+            damageCodes: analysis.damageCodes,
+            confidence: analysis.confidence,
+            status: analysis.status,
+          }
+        : null,
+    };
+  }
+
+  async detail(tenantId: string, partId: string) {
+    return withTenantContext(this.dataSource, tenantId, async (manager) => {
+      const part = await manager
+        .getRepository(Part)
+        .findOne({ where: { id: partId } });
+      if (!part) {
+        throw new NotFoundException('Part not found');
+      }
+      // Sequential, not Promise.all -- see the same note in list() above.
+      const vehicle = await manager
+        .getRepository(Vehicle)
+        .findOne({ where: { id: part.vehicleId } });
+      const taxonomy = await manager
+        .getRepository(PartTaxonomy)
+        .findOne({ where: { id: part.taxonomyId } });
+      const photos = await manager
+        .getRepository(PartImage)
+        .find({ where: { partId } });
+      const analyses = await manager
+        .getRepository(AiAnalysis)
+        .find({ where: { partId }, order: { createdAt: 'DESC' } });
+      return {
+        id: part.id,
+        status: part.status,
+        createdAt: part.createdAt,
+        taxonomyId: part.taxonomyId,
+        taxonomyName: taxonomy?.name ?? null,
+        vehicle,
+        photos,
+        latestAnalysis: analyses[0] ?? null,
+      };
+    });
+  }
+
+  async approve(tenantId: string, partId: string): Promise<void> {
+    await withTenantContext(this.dataSource, tenantId, async (manager) => {
+      const part = await manager
+        .getRepository(Part)
+        .findOne({ where: { id: partId } });
+      if (!part) {
+        throw new NotFoundException('Part not found');
+      }
+      await manager
+        .getRepository(Part)
+        .update({ id: partId }, { status: PartStatus.APPROVED });
     });
   }
 }

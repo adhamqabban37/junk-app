@@ -11,6 +11,7 @@ import { createRedisConnectionOptions } from './queues/redis-connection';
 import { SettingsModule } from './settings/settings.module';
 import { StorageModule } from './storage/storage.module';
 import { TaxonomyModule } from './taxonomy/taxonomy.module';
+import { VehiclesModule } from './vehicles/vehicles.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { TaxonomyModule } from './taxonomy/taxonomy.module';
     AiModule,
     PartsModule,
     SettingsModule,
+    VehiclesModule,
   ],
   controllers: [AppController],
   providers: [AppService],
