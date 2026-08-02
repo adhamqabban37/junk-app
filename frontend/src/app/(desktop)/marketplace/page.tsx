@@ -50,7 +50,11 @@ export default function MarketplacePage() {
         <Button className="mt-4" disabled={exporting} onClick={handleExport}>
           {exporting ? "Exporting…" : "Export CSV"}
         </Button>
-        {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
+        {error && (
+          <p role="alert" className="mt-2 text-sm text-destructive">
+            {error}
+          </p>
+        )}
       </div>
     </div>
   );

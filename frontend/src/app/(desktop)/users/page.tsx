@@ -140,7 +140,11 @@ export default function UsersPage() {
           {submitting ? "Adding…" : "Add user"}
         </Button>
       </form>
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      {error && (
+        <p role="alert" className="text-sm text-destructive">
+          {error}
+        </p>
+      )}
 
       {users === null ? (
         <p className="text-sm text-muted-foreground">Loading…</p>

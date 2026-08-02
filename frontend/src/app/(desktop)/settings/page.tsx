@@ -73,7 +73,11 @@ export default function SettingsPage() {
           </Button>
           {saved && <span className="text-sm text-muted-foreground">Saved.</span>}
         </div>
-        {error && <p className="text-sm text-destructive">{error}</p>}
+        {error && (
+          <p role="alert" className="text-sm text-destructive">
+            {error}
+          </p>
+        )}
       </form>
     </div>
   );
