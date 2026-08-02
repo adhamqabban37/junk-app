@@ -28,6 +28,16 @@ import { useAuthSession } from "@/lib/auth-session";
 
 const TENANT_ID = "11111111-1111-1111-1111-111111111111";
 
+function base64url(input: string): string {
+  return btoa(input).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function makeJwt(payload: Record<string, unknown>): string {
+  const header = base64url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+  const body = base64url(JSON.stringify(payload));
+  return `${header}.${body}.fake-signature`;
+}
+
 describe("LoginPage", () => {
   beforeEach(() => {
     clearTenantId();
@@ -70,7 +80,8 @@ describe("LoginPage", () => {
   it("worker PIN login: selecting a worker, entering the correct PIN logs in and redirects home", async () => {
     setTenantId(TENANT_ID);
     vi.mocked(listWorkers).mockResolvedValue([{ id: "worker-1", name: "Worker A" }]);
-    vi.mocked(loginPin).mockResolvedValue("fake.jwt.token");
+    const workerToken = makeJwt({ sub: "worker-1", tenantId: TENANT_ID, role: "worker", name: "Worker A" });
+    vi.mocked(loginPin).mockResolvedValue(workerToken);
     const user = userEvent.setup();
 
     render(<LoginPage />);
@@ -82,7 +93,7 @@ describe("LoginPage", () => {
     await user.click(screen.getByRole("button", { name: /^log in$/i }));
 
     await waitFor(() => expect(pushMock).toHaveBeenCalledWith("/"));
-    expect(useAuthSession.getState().token).toBe("fake.jwt.token");
+    expect(useAuthSession.getState().token).toBe(workerToken);
   });
 
   it("worker PIN login: shows an inline error on the wrong PIN without navigating away", async () => {
@@ -105,7 +116,13 @@ describe("LoginPage", () => {
   it("manager login: switching tabs and submitting valid credentials logs in and redirects", async () => {
     setTenantId(TENANT_ID);
     vi.mocked(listWorkers).mockResolvedValue([]);
-    vi.mocked(loginManager).mockResolvedValue("manager.jwt.token");
+    const managerToken = makeJwt({
+      sub: "manager-1",
+      tenantId: TENANT_ID,
+      role: "manager",
+      name: "Manager A",
+    });
+    vi.mocked(loginManager).mockResolvedValue(managerToken);
     const user = userEvent.setup();
 
     render(<LoginPage />);
@@ -116,8 +133,8 @@ describe("LoginPage", () => {
     await user.type(screen.getByLabelText(/password/i), "hunter2");
     await user.click(screen.getByRole("button", { name: /^log in$/i }));
 
-    await waitFor(() => expect(pushMock).toHaveBeenCalledWith("/"));
-    expect(useAuthSession.getState().token).toBe("manager.jwt.token");
+    await waitFor(() => expect(pushMock).toHaveBeenCalledWith("/dashboard"));
+    expect(useAuthSession.getState().token).toBe(managerToken);
   });
 
   it("manager login: shows an inline error on invalid credentials", async () => {

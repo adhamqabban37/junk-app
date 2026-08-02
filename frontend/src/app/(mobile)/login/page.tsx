@@ -260,7 +260,8 @@ export default function LoginPage() {
 
   function handleSuccess(token: string) {
     login(token);
-    router.push("/");
+    const role = useAuthSession.getState().claims?.role;
+    router.push(role === "manager" || role === "owner" ? "/dashboard" : "/");
   }
 
   if (!tenantHydrated) {

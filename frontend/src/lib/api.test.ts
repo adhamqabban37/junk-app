@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ApiError, fetchTaxonomy, listWorkers, loginManager, loginPin } from "./api";
+import { ApiError, authFetch, fetchTaxonomy, listWorkers, loginManager, loginPin } from "./api";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -66,6 +66,31 @@ describe("fetchTaxonomy", () => {
   it("throws ApiError on failure", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ message: "Unauthorized" }, 401));
     await expect(fetchTaxonomy("bad-token", fetchMock)).rejects.toBeInstanceOf(ApiError);
+  });
+});
+
+describe("authFetch", () => {
+  it("sends the bearer token, JSON content-type for a body, and parses the JSON response", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true }));
+
+    const result = await authFetch<{ ok: boolean }>(
+      "/parts/123/approve",
+      { token: "jwt-token", method: "POST" },
+      fetchMock,
+    );
+
+    expect(result).toEqual({ ok: true });
+    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/parts/123/approve");
+    expect(options.method).toBe("POST");
+    expect((options.headers as Record<string, string>).Authorization).toBe("Bearer jwt-token");
+  });
+
+  it("throws ApiError with the backend's message on failure", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ message: "Forbidden" }, 403));
+    await expect(
+      authFetch("/vehicles", { token: "bad-token" }, fetchMock),
+    ).rejects.toMatchObject({ message: "Forbidden", status: 403 });
   });
 });
 

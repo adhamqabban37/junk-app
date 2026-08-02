@@ -40,6 +40,24 @@ async function parseJsonOrThrow<T>(response: Response): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+export interface AuthFetchOptions extends Omit<RequestInit, "headers"> {
+  token: string;
+  headers?: Record<string, string>;
+}
+
+/** Shared by every desktop-dashboard resource client (vehicles, parts, users, settings, corrections). */
+export async function authFetch<T>(
+  path: string,
+  { token, headers, ...init }: AuthFetchOptions,
+  fetchImpl: typeof fetch = fetch,
+): Promise<T> {
+  const res = await fetchImpl(`${apiBaseUrl()}${path}`, {
+    ...init,
+    headers: { ...headers, Authorization: `Bearer ${token}` },
+  });
+  return parseJsonOrThrow<T>(res);
+}
+
 export async function listWorkers(
   tenantId: string,
   fetchImpl: typeof fetch = fetch,
