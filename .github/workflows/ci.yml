@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: junkyard
+          POSTGRES_PASSWORD: junkyard_dev
+          POSTGRES_DB: junkyard_dev
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U junkyard -d junkyard_dev"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Deliberately the non-superuser junkyard_app role, not the postgres
+      # service's own superuser -- Postgres never applies row-level security
+      # to a superuser connection (see docker/postgres-init/01-app-role.sql
+      # and PROGRESS.md's Phase 1 "Resolved blockers" for why this matters).
+      DATABASE_URL: postgres://junkyard_app:junkyard_app_dev@localhost:5432/junkyard_dev
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET: ci-test-secret-not-for-production
+      GEMINI_API_KEY: ci-placeholder-key
+      NODE_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.x"
+          cache: "npm"
+
+      - run: npm ci
+
+      - name: Apply Postgres init scripts (pgvector extension + non-superuser app role)
+        run: |
+          PGPASSWORD=junkyard_dev psql -h localhost -U junkyard -d junkyard_dev -f docker/postgres-init/00-extensions.sql
+          PGPASSWORD=junkyard_dev psql -h localhost -U junkyard -d junkyard_dev -f docker/postgres-init/01-app-role.sql
+
+      - run: npm run migrate --workspace=backend
+
+      - run: npm run lint --workspace=backend
+
+      - run: npm run test:backend
+
+      - run: npm run test:e2e --workspace=backend
+
+      - run: npm run build:backend
+
+  frontend:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.x"
+          cache: "npm"
+
+      - run: npm ci
+
+      - run: npm run lint --workspace=frontend
+
+      - run: npm run test:frontend
+
+      - run: npm run build:frontend
+
+      - name: Install Playwright browsers
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright e2e (requires a production build, see playwright.config.ts)
+        run: npm run test:e2e --workspace=frontend
