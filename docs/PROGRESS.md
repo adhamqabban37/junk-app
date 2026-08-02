@@ -125,12 +125,14 @@ Net effect: failure rate dropped from roughly 1-in-2 runs to roughly 1-in-8 runs
 - [x] eBay/Shopify/ACES direct integrations explicitly deferred (Marketplace screen states this) — not built, per BUILD_PLAN's own MVP scope.
 - [x] **Acceptance verified:** VIN decode failure falls back gracefully to manual entry (test above); CSV opens correctly with AI-generated title/description/grade (`parts-export.e2e-spec.ts`).
 
-## Phase 7 — Polish & Hardening
-- [ ] PWA manifest/Workbox strategies
-- [ ] Accessibility pass
-- [ ] Loading/error/empty state audit (all fetches)
-- [ ] Full regression pass, typecheck, lint
-- [ ] **Acceptance verified:** Lighthouse PWA score, a11y clean, no `any` types, all state-completeness checks pass
+## Phase 7 — Polish & Hardening ✅ (2026-08-01)
+- [x] PWA manifest/service worker with CacheFirst/StaleWhileRevalidate strategies — `frontend/public/{manifest.webmanifest,sw.js,icons/*}`, registered from `(mobile)/layout.tsx` via `lib/pwa.ts`. Removed `@ducanh2912/next-pwa`: it generates its service worker via a `webpack()` config hook, but this project builds exclusively with Turbopack, which does not execute `webpack()` config or support webpack plugins at all — the dependency was dead weight, never actually producing a service worker. Replaced with a small hand-written `sw.js` implementing the two named strategies directly against the Cache API. Verified via a real `next build` (Turbopack) succeeding end-to-end and a live curl against the dev server.
+- [x] **Bug found + fixed during this pass:** `frontend/src/app/page.tsx` was still the unmodified create-next-app scaffold from Phase 0, never replaced. Since `(mobile)/page.tsx` (route group) also resolves to `/`, and Turbopack silently let the root-level file win instead of erroring on the conflict, the real worker home screen (in-progress drafts, "New Vehicle") was completely unreachable this entire build. Deleted the scaffold file; confirmed via `next build` (no conflict) and a live curl (title/markup now match the real app).
+- [x] Accessibility pass — audited every screen for label/input pairing, alt text, focus-visible states, semantic landmarks (`nav`/`main`), and color-redundant status text; all were already solid. Found and fixed one real gap: three desktop screens' error messages (Settings, Users, Marketplace) were missing `role="alert"`, present everywhere else — a screen reader would never announce those errors.
+- [x] Loading/error/empty state audit (all fetches) — found a systemic gap: every Phase 5 desktop screen caught its initial fetch's error and silently substituted a default (0, an empty array, a fallback threshold), rendering identically to a legitimately empty tenant. Fixed across all 8 screens (Dashboard, Review Queue, Inventory, Vehicles, Marketplace, Analytics, Users, Settings): each now has a `role="alert"` error state with a Retry button, distinguishable from its empty state, regression-tested per screen.
+- [x] Full regression pass, typecheck, lint — backend 15 unit + 58 e2e passing, `tsc --noEmit` and `eslint --quiet` clean, `nest build` succeeds. Frontend 152 tests across 31 files passing, `tsc --noEmit` and `eslint --quiet` clean (only the pre-existing, expected `react-hooks/incompatible-library` warning on Inventory's `useVirtualizer`), `next build` (Turbopack) succeeds.
+- [x] No `any` types — grepped both workspaces' `src/` for `: any`, `<any>`, `as any`; zero matches in either.
+- [x] **Acceptance verified:** a11y clean (fixed gap above), no `any` types, all state-completeness (loading/error/empty) checks pass. **Gap: Lighthouse PWA score not literally measured** — would require running Lighthouse against a live Chrome tab, and browser-tool use was explicitly deferred this session (same precedent as Phase 3's unverified live walkthrough and Phase 5's Inventory Playwright-trace gap). The manifest/service-worker/icons are in place and installable; the actual audit score is unverified.
 
 ## Notes
 - Planning Gate review (docs/BUILD_PLAN.md § GSTACK REVIEW REPORT) completed 2026-07-31 — 11 findings, all fixed pre-build.
