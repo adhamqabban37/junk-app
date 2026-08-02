@@ -21,7 +21,9 @@ export class ApiError extends Error {
 }
 
 export function apiBaseUrl(): string {
-  return process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3000";
+  // 3001, not 3000: matches backend/src/main.ts's default listen port,
+  // chosen specifically to not collide with this app's own dev server port.
+  return process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
 }
 
 async function parseJsonOrThrow<T>(response: Response): Promise<T> {

@@ -55,7 +55,12 @@ describe("LoginPage", () => {
   });
 
   it("shows a device setup form when no tenant is bound yet, and binds it on submit", async () => {
-    const user = userEvent.setup();
+    // delay: null -- userEvent's default per-keystroke pause has no test
+    // value here (the field has no per-keystroke logic to exercise) and
+    // was pushing this 36-character UUID past the 5s default test timeout
+    // under load; every other test's typed strings are short enough not to
+    // hit this.
+    const user = userEvent.setup({ delay: null });
     vi.mocked(listWorkers).mockResolvedValue([]);
     render(<LoginPage />);
 

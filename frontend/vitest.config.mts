@@ -8,6 +8,12 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./vitest.setup.ts"],
     globals: true,
+    // Vitest's 5s default is too tight for userEvent.type() on longer
+    // strings (VINs, UUIDs) once jsdom environment setup itself is under
+    // load -- these are real per-keystroke event simulations, not stuck
+    // tests. 15s gives headroom without letting a genuinely hung test run
+    // forever.
+    testTimeout: 15000,
   },
   resolve: {
     alias: {

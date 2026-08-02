@@ -33,7 +33,7 @@ npm run dev:frontend
 ```
 
 Frontend: http://localhost:3000
-Backend: http://localhost:3001 (adjust to whatever port `backend/src/main.ts` binds)
+Backend: http://localhost:3001 (both dev servers run at once per step 6 above; the backend defaults to 3001 specifically so it doesn't collide with the frontend's 3000 — see `backend/src/main.ts` / `frontend/src/lib/api.ts`)
 
 ## Common commands
 
