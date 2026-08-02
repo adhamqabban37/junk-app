@@ -9,6 +9,7 @@ import { PartTaxonomy } from '../src/database/entities/part-taxonomy.entity';
 import { Tenant } from '../src/database/entities/tenant.entity';
 import { User, UserRole } from '../src/database/entities/user.entity';
 import { withTenantContext } from '../src/database/tenant-context';
+import { configureApp } from '../src/configure-app';
 import { closeTestApp } from './close-test-app';
 
 describe('Taxonomy (e2e)', () => {
@@ -25,6 +26,7 @@ describe('Taxonomy (e2e)', () => {
     }).compile();
 
     app = moduleFixture.createNestApplication();
+    configureApp(app);
     await app.init();
 
     dataSource = app.get(DataSource);

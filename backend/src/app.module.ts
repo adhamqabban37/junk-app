@@ -8,6 +8,7 @@ import { AuthModule } from './auth/auth.module';
 import { DatabaseModule } from './database/database.module';
 import { PartsModule } from './parts/parts.module';
 import { createRedisConnectionOptions } from './queues/redis-connection';
+import { SettingsModule } from './settings/settings.module';
 import { StorageModule } from './storage/storage.module';
 import { TaxonomyModule } from './taxonomy/taxonomy.module';
 
@@ -27,6 +28,7 @@ import { TaxonomyModule } from './taxonomy/taxonomy.module';
     TaxonomyModule,
     AiModule,
     PartsModule,
+    SettingsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

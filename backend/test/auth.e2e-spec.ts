@@ -8,6 +8,7 @@ import { AppModule } from '../src/app.module';
 import { Tenant } from '../src/database/entities/tenant.entity';
 import { User, UserRole } from '../src/database/entities/user.entity';
 import { withTenantContext } from '../src/database/tenant-context';
+import { configureApp } from '../src/configure-app';
 import { closeTestApp } from './close-test-app';
 
 // Force a tiny connection pool so the concurrent test below is guaranteed to
@@ -47,6 +48,7 @@ describe('Auth (e2e)', () => {
     }).compile();
 
     app = moduleFixture.createNestApplication();
+    configureApp(app);
     await app.init();
 
     dataSource = app.get(DataSource);

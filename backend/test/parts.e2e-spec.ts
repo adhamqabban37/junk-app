@@ -20,6 +20,7 @@ import { Tenant } from '../src/database/entities/tenant.entity';
 import { User, UserRole } from '../src/database/entities/user.entity';
 import { Vehicle, CrushStatus } from '../src/database/entities/vehicle.entity';
 import { withTenantContext } from '../src/database/tenant-context';
+import { configureApp } from '../src/configure-app';
 import { closeTestApp } from './close-test-app';
 
 // This test exercises the real BullMQ queue + worker end to end (upload ->
@@ -74,6 +75,7 @@ describe('Parts image upload (e2e)', () => {
       .compile();
 
     app = moduleFixture.createNestApplication();
+    configureApp(app);
     await app.init();
 
     dataSource = app.get(DataSource);

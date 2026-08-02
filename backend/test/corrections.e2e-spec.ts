@@ -18,6 +18,7 @@ import { Tenant } from '../src/database/entities/tenant.entity';
 import { User, UserRole } from '../src/database/entities/user.entity';
 import { Vehicle, CrushStatus } from '../src/database/entities/vehicle.entity';
 import { withTenantContext } from '../src/database/tenant-context';
+import { configureApp } from '../src/configure-app';
 import { closeTestApp } from './close-test-app';
 
 describe('Corrections (e2e)', () => {
@@ -36,6 +37,7 @@ describe('Corrections (e2e)', () => {
       imports: [AppModule],
     }).compile();
     app = moduleFixture.createNestApplication();
+    configureApp(app);
     await app.init();
 
     dataSource = app.get(DataSource);
