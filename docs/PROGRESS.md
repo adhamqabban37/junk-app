@@ -105,10 +105,12 @@ Fixed, in order of what actually helped:
 
 Net effect: failure rate dropped from roughly 1-in-2 runs to roughly 1-in-8 runs across ~15 repeated full-suite runs while diagnosing this. The residual flake looks like Windows-specific ioredis/BullMQ socket-teardown timing under rapid sequential Nest app boot/teardown — a pattern that only exists in this multi-file e2e run, never in real operation (a production app boots once and runs continuously). Stopped chasing it further past this point; if it becomes a real CI problem, the next lever to pull is investigating BullMQ's own internals for the blocking connection (blocked this session by a permission restriction on reading `node_modules` source directly) or splitting e2e specs that need a full app boot from those that don't (`rls-isolation` and `ai-analysis` already don't).
 
-## Phase 5 — Desktop Manager Dashboard
-- [ ] Global Dashboard
-- [ ] AI Review Queue w/ keyboard nav, correction capture, distinct low-confidence state
-- [ ] Inventory Management virtualized table w/ measured frame-time budget
+## Phase 5 — Desktop Manager Dashboard 🚧 in progress (2026-08-01)
+- [x] Backend: Vehicles resource API (list/detail), Parts resource API (list/detail/approve), AI Review Queue API, Users management API (RBAC), Tenant Settings API (AI confidence threshold), CSV export endpoint (`backend/src/{vehicles,parts,users,settings}/*`)
+- [x] Desktop shell: `(desktop)/layout.tsx` manager/owner auth guard + `desktop-nav.tsx` (8 sections), same `restored`-flag pattern as the mobile layout
+- [x] Global Dashboard (`(desktop)/dashboard`) — vehicle count, needs-review count, marketplace-ready count, each linking to its detail screen
+- [x] AI Review Queue (`(desktop)/review-queue`) w/ keyboard nav (↑/↓ select, `a`/Enter approve), grade-override correction capture (records via `POST /corrections` before approving, only when the grade actually changed), visually distinct low-confidence/failed-analysis state
+- [x] Inventory Management virtualized table (`(desktop)/inventory`) — `@tanstack/react-virtual`, fetches up to 1000 parts (backend's `ListPartsDto` cap) and renders only the visible window + overscan. Status filter dropdown. Functionally verified: a 10,000-item mocked dataset still renders <50 DOM row elements (`page.test.tsx`). **Gap: not measured via Playwright trace** as BUILD_PLAN's Phase 5 line item literally specifies — Playwright isn't installed in this repo, and BUILD_PLAN's own "Decisions Locked In" section defers Playwright to "later e2e". Proceeded with the bounded-DOM-node structural proxy instead of adding a new test framework mid-phase; revisit with a real trace measurement once Playwright is introduced.
 - [ ] Vehicles Management
 - [ ] Marketplace Syndication (CSV export only for MVP)
 - [ ] Analytics
