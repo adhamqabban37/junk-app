@@ -37,6 +37,13 @@ describe("VehiclesPage", () => {
     vi.mocked(listVehicles).mockReset();
   });
 
+  it("shows a distinguishable error state, not the empty state, when vehicles fail to load", async () => {
+    vi.mocked(listVehicles).mockRejectedValue(new Error("Request failed with status 500"));
+    render(<VehiclesPage />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/couldn.t load/i);
+    expect(screen.queryByText(/no vehicles in the yard/i)).not.toBeInTheDocument();
+  });
+
   it("shows the empty state when there are no vehicles yet", async () => {
     vi.mocked(listVehicles).mockResolvedValue(makeResult([]));
     render(<VehiclesPage />);

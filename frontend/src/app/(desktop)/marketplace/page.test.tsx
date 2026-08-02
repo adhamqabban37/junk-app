@@ -22,6 +22,13 @@ describe("MarketplacePage", () => {
     vi.mocked(listParts).mockResolvedValue({ items: [], total: 12, page: 1, pageSize: 1 });
   });
 
+  it("shows a distinguishable error, not a silent 0, when the count fails to load", async () => {
+    vi.mocked(listParts).mockReset();
+    vi.mocked(listParts).mockRejectedValue(new Error("Request failed with status 500"));
+    render(<MarketplacePage />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/couldn.t load/i);
+  });
+
   it("shows how many parts are marketplace-ready", async () => {
     render(<MarketplacePage />);
     expect(await screen.findByText("12")).toBeInTheDocument();

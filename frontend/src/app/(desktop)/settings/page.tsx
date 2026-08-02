@@ -11,13 +11,18 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (!token) return;
     getSettings(token)
-      .then((s) => setThresholdPercent(Math.round(s.aiConfidenceThreshold * 100)))
-      .catch(() => setThresholdPercent(70));
-  }, [token]);
+      .then((s) => {
+        setLoadError(false);
+        setThresholdPercent(Math.round(s.aiConfidenceThreshold * 100));
+      })
+      .catch(() => setLoadError(true));
+  }, [token, attempt]);
 
   async function handleSave(e: FormEvent) {
     e.preventDefault();
@@ -33,6 +38,17 @@ export default function SettingsPage() {
     } finally {
       setSaving(false);
     }
+  }
+
+  if (loadError) {
+    return (
+      <div role="alert" className="flex items-center gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+        <span>Couldn&apos;t load settings.</span>
+        <button type="button" className="font-medium underline" onClick={() => setAttempt((n) => n + 1)}>
+          Retry
+        </button>
+      </div>
+    );
   }
 
   if (thresholdPercent === null) {

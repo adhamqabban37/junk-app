@@ -29,6 +29,8 @@ export default function InventoryPage() {
   const token = useAuthSession((s) => s.token);
   const [items, setItems] = useState<PartListItem[] | null>(null);
   const [status, setStatus] = useState<PartStatus | "">("");
+  const [error, setError] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -36,15 +38,17 @@ export default function InventoryPage() {
     let cancelled = false;
     listParts(token, { status: status ? [status] : undefined, pageSize: PAGE_SIZE })
       .then((res) => {
-        if (!cancelled) setItems(res.items);
+        if (cancelled) return;
+        setError(false);
+        setItems(res.items);
       })
       .catch(() => {
-        if (!cancelled) setItems([]);
+        if (!cancelled) setError(true);
       });
     return () => {
       cancelled = true;
     };
-  }, [token, status]);
+  }, [token, status, attempt]);
 
   const rows = useMemo(() => items ?? [], [items]);
 
@@ -54,6 +58,17 @@ export default function InventoryPage() {
     estimateSize: () => ROW_HEIGHT,
     overscan: 10,
   });
+
+  if (error) {
+    return (
+      <div role="alert" className="flex items-center gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+        <span>Couldn&apos;t load inventory.</span>
+        <button type="button" className="font-medium underline" onClick={() => setAttempt((n) => n + 1)}>
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   if (items === null) {
     return <p className="text-sm text-muted-foreground">Loading…</p>;

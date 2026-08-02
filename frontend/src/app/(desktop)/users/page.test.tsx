@@ -36,6 +36,13 @@ describe("UsersPage", () => {
     vi.mocked(updateUser).mockReset();
   });
 
+  it("shows a distinguishable error state, not the empty state, when users fail to load", async () => {
+    vi.mocked(listUsers).mockRejectedValue(new Error("Request failed with status 500"));
+    render(<UsersPage />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/couldn.t load/i);
+    expect(screen.queryByText(/no users yet/i)).not.toBeInTheDocument();
+  });
+
   it("lists users with their role", async () => {
     vi.mocked(listUsers).mockResolvedValue([makeUser(), makeUser({ id: "u2", name: "Sam Manager", role: "manager", email: "sam@test.local" })]);
     render(<UsersPage />);

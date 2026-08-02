@@ -28,6 +28,13 @@ describe("AnalyticsPage", () => {
     vi.mocked(getAnalytics).mockReset();
   });
 
+  it("shows a distinguishable error state, not the empty-tenant state, when analytics fails to load", async () => {
+    vi.mocked(getAnalytics).mockRejectedValue(new Error("Request failed with status 500"));
+    render(<AnalyticsPage />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/couldn.t load/i);
+    expect(screen.queryByText(/no data yet/i)).not.toBeInTheDocument();
+  });
+
   it("shows total vehicles and parts", async () => {
     vi.mocked(getAnalytics).mockResolvedValue(makeSummary());
     render(<AnalyticsPage />);

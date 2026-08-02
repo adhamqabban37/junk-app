@@ -22,6 +22,14 @@ describe("SettingsPage", () => {
     vi.mocked(getSettings).mockResolvedValue({ aiConfidenceThreshold: 0.7 });
   });
 
+  it("shows a distinguishable error, not a silent default value, when settings fail to load", async () => {
+    vi.mocked(getSettings).mockReset();
+    vi.mocked(getSettings).mockRejectedValue(new Error("Request failed with status 500"));
+    render(<SettingsPage />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/couldn.t load/i);
+    expect(screen.queryByLabelText(/ai confidence threshold/i)).not.toBeInTheDocument();
+  });
+
   it("loads and displays the current AI confidence threshold", async () => {
     render(<SettingsPage />);
     const input = await screen.findByLabelText(/ai confidence threshold/i);

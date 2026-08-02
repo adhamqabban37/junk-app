@@ -42,6 +42,15 @@ describe("DashboardPage", () => {
     expect(await screen.findByText("15")).toBeInTheDocument();
   });
 
+  it("shows a distinguishable error banner, not a silent zero, when a stat fails to load", async () => {
+    vi.mocked(listVehicles).mockRejectedValue(new Error("Request failed with status 500"));
+    vi.mocked(listParts).mockRejectedValue(new Error("Request failed with status 500"));
+
+    render(<DashboardPage />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/couldn.t load/i);
+  });
+
   it("links the review-queue stat to the review queue screen", async () => {
     vi.mocked(listVehicles).mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 1 });
     vi.mocked(listParts).mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 1 });

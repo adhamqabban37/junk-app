@@ -19,21 +19,36 @@ export default function VehiclesPage() {
   const token = useAuthSession((s) => s.token);
   const [items, setItems] = useState<VehicleListItem[] | null>(null);
   const [crushStatus, setCrushStatus] = useState<CrushStatus | "">("");
+  const [error, setError] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
     listVehicles(token, { crushStatus: crushStatus || undefined, pageSize: 200 })
       .then((res) => {
-        if (!cancelled) setItems(res.items);
+        if (cancelled) return;
+        setError(false);
+        setItems(res.items);
       })
       .catch(() => {
-        if (!cancelled) setItems([]);
+        if (!cancelled) setError(true);
       });
     return () => {
       cancelled = true;
     };
-  }, [token, crushStatus]);
+  }, [token, crushStatus, attempt]);
+
+  if (error) {
+    return (
+      <div role="alert" className="flex items-center gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+        <span>Couldn&apos;t load vehicles.</span>
+        <button type="button" className="font-medium underline" onClick={() => setAttempt((n) => n + 1)}>
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   if (items === null) {
     return <p className="text-sm text-muted-foreground">Loading…</p>;

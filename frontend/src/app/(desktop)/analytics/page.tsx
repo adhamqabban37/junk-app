@@ -30,21 +30,29 @@ function BreakdownList({ data }: { data: Record<string, number> }) {
 export default function AnalyticsPage() {
   const token = useAuthSession((s) => s.token);
   const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
+  const [error, setError] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (!token) return;
     getAnalytics(token)
-      .then(setSummary)
-      .catch(() =>
-        setSummary({
-          totalVehicles: 0,
-          totalParts: 0,
-          partsByStatus: {},
-          gradeDistribution: {},
-          vehiclesByCrushStatus: {},
-        }),
-      );
-  }, [token]);
+      .then((s) => {
+        setError(false);
+        setSummary(s);
+      })
+      .catch(() => setError(true));
+  }, [token, attempt]);
+
+  if (error) {
+    return (
+      <div role="alert" className="flex items-center gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+        <span>Couldn&apos;t load analytics.</span>
+        <button type="button" className="font-medium underline" onClick={() => setAttempt((n) => n + 1)}>
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   if (summary === null) {
     return <p className="text-sm text-muted-foreground">Loading…</p>;

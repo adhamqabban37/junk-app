@@ -53,6 +53,13 @@ describe("InventoryPage", () => {
     });
   });
 
+  it("shows a distinguishable error state, not the empty state, when inventory fails to load", async () => {
+    vi.mocked(listParts).mockRejectedValue(new Error("Request failed with status 500"));
+    render(<InventoryPage />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/couldn.t load/i);
+    expect(screen.queryByText(/no parts in inventory/i)).not.toBeInTheDocument();
+  });
+
   it("shows the empty state when there is no inventory yet", async () => {
     vi.mocked(listParts).mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 1000 });
     render(<InventoryPage />);

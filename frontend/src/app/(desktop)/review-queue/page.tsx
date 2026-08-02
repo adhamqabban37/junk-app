@@ -23,6 +23,8 @@ export default function ReviewQueuePage() {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [gradeOverrides, setGradeOverrides] = useState<Record<string, string>>({});
   const [submittingId, setSubmittingId] = useState<string | null>(null);
+  const [error, setError] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (!token) return;
@@ -32,9 +34,12 @@ export default function ReviewQueuePage() {
         // Fall back to the built-in default (0.7) if settings can't be fetched.
       });
     listParts(token, { status: ["pending_review", "needs_manual_grading"], pageSize: 200 })
-      .then((res) => setItems(res.items))
-      .catch(() => setItems([]));
-  }, [token]);
+      .then((res) => {
+        setError(false);
+        setItems(res.items);
+      })
+      .catch(() => setError(true));
+  }, [token, attempt]);
 
   async function handleApprove(item: PartListItem) {
     if (!token || !item.latestAnalysis || submittingId) return;
@@ -74,6 +79,17 @@ export default function ReviewQueuePage() {
     return () => window.removeEventListener("keydown", onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- handleApprove closes over gradeOverrides/token/submittingId intentionally re-read fresh each render via the effect re-subscribing
   }, [items, clampedIndex, gradeOverrides, token, submittingId]);
+
+  if (error) {
+    return (
+      <div role="alert" className="flex items-center gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+        <span>Couldn&apos;t load the review queue.</span>
+        <button type="button" className="font-medium underline" onClick={() => setAttempt((n) => n + 1)}>
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   if (items === null) {
     return <p className="text-sm text-muted-foreground">Loading…</p>;

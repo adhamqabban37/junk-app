@@ -58,6 +58,13 @@ describe("ReviewQueuePage", () => {
     vi.mocked(getSettings).mockResolvedValue({ aiConfidenceThreshold: 0.7 });
   });
 
+  it("shows a distinguishable error state, not the empty state, when the queue fails to load", async () => {
+    vi.mocked(listParts).mockRejectedValue(new Error("Request failed with status 500"));
+    render(<ReviewQueuePage />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/couldn.t load/i);
+    expect(screen.queryByText(/nothing to review/i)).not.toBeInTheDocument();
+  });
+
   it("shows the empty state when nothing needs review", async () => {
     vi.mocked(listParts).mockResolvedValue(makeListResult([]));
     render(<ReviewQueuePage />);

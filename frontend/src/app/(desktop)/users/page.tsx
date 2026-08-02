@@ -17,13 +17,18 @@ export default function UsersPage() {
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (!token) return;
     listUsers(token)
-      .then(setUsers)
-      .catch(() => setUsers([]));
-  }, [token]);
+      .then((u) => {
+        setLoadError(false);
+        setUsers(u);
+      })
+      .catch(() => setLoadError(true));
+  }, [token, attempt]);
 
   async function handleCreate(e: FormEvent) {
     e.preventDefault();
@@ -146,7 +151,14 @@ export default function UsersPage() {
         </p>
       )}
 
-      {users === null ? (
+      {loadError ? (
+        <div role="alert" className="flex items-center gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+          <span>Couldn&apos;t load users.</span>
+          <button type="button" className="font-medium underline" onClick={() => setAttempt((n) => n + 1)}>
+            Retry
+          </button>
+        </div>
+      ) : users === null ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
       ) : users.length === 0 ? (
         <p className="text-sm text-muted-foreground">No users yet — add a worker or manager above.</p>
