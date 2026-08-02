@@ -25,7 +25,10 @@ export default function VehiclesPage() {
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
-    listVehicles(token, { crushStatus: crushStatus || undefined, pageSize: 200 })
+    // Backend's ListVehiclesDto caps pageSize at 100 -- requesting more 400s
+    // every call (found via a live browser walkthrough; the unit test mocks
+    // listVehicles directly, so it never exercised the real DTO validation).
+    listVehicles(token, { crushStatus: crushStatus || undefined, pageSize: 100 })
       .then((res) => {
         if (cancelled) return;
         setError(false);
