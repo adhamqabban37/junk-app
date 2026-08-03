@@ -16,6 +16,15 @@ vi.mock("@/hooks/use-camera", () => ({
   useCamera: () => ({ videoRef: { current: null }, ready: false, error: "no camera in tests" }),
 }));
 
+const captureFromFileMock = vi.fn();
+vi.mock("@/lib/offline/capture", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/offline/capture")>();
+  return {
+    ...actual,
+    captureFromFile: (file: File) => captureFromFileMock(file),
+  };
+});
+
 function makePhoto(angle: VehicleImageAngle): DraftPhoto {
   return {
     id: `${angle}-photo`,
@@ -31,6 +40,7 @@ describe("VehiclePageClient", () => {
 
   beforeEach(async () => {
     pushMock.mockReset();
+    captureFromFileMock.mockReset();
     useIntakeStore.setState({ drafts: [], hydrated: false });
     const draft = await useIntakeStore.getState().createDraft();
     await useIntakeStore.getState().setVin(draft.id, "1HGCM82633A123456", "manual");
@@ -102,5 +112,26 @@ describe("VehiclePageClient", () => {
     render(<VehiclePageClient draftId={draftId} />);
 
     expect(await screen.findByText(/blurry/i)).toBeInTheDocument();
+  });
+
+  it("uploading a photo file for the next angle saves it via captureFromFile, without needing the live camera", async () => {
+    captureFromFileMock.mockResolvedValue({
+      blob: new Blob(["x"], { type: "image/jpeg" }),
+      qualityFlags: { blurry: false, tooDark: false },
+    });
+    const user = userEvent.setup();
+    render(<VehiclePageClient draftId={draftId} />);
+    await screen.findByLabelText(/make/i);
+
+    expect(screen.getByText(/0 \/ 4/)).toBeInTheDocument();
+
+    const file = new File(["fake-bytes"], "front.jpg", { type: "image/jpeg" });
+    const input = screen.getByLabelText(/choose photo/i);
+    await user.upload(input, file);
+
+    expect(captureFromFileMock).toHaveBeenCalledWith(file);
+    await waitFor(() => expect(screen.getByText(/1 \/ 4/)).toBeInTheDocument());
+    const draft = useIntakeStore.getState().drafts.find((d) => d.id === draftId);
+    expect(draft?.exteriorPhotos[0]).toMatchObject({ angle: "front" });
   });
 });

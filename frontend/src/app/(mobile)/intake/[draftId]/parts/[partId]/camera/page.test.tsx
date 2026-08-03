@@ -16,12 +16,22 @@ vi.mock("@/hooks/use-camera", () => ({
   useCamera: () => mockUseCamera(),
 }));
 
+const captureFromFileMock = vi.fn();
+vi.mock("@/lib/offline/capture", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/offline/capture")>();
+  return {
+    ...actual,
+    captureFromFile: (file: File) => captureFromFileMock(file),
+  };
+});
+
 describe("PartCameraPageClient", () => {
   let draftId: string;
   const partId = "part-1";
 
   beforeEach(async () => {
     pushMock.mockReset();
+    captureFromFileMock.mockReset();
     mockUseCamera.mockReturnValue({
       videoRef: { current: null },
       ready: false,
@@ -87,5 +97,23 @@ describe("PartCameraPageClient", () => {
     render(<PartCameraPageClient draftId={draftId} partId={partId} />);
 
     expect(await screen.findByText(/blurry/i)).toBeInTheDocument();
+  });
+
+  it("uploading a photo file saves it via captureFromFile and enables Done, without needing the live camera", async () => {
+    captureFromFileMock.mockResolvedValue({
+      blob: new Blob(["x"], { type: "image/jpeg" }),
+      qualityFlags: { blurry: false, tooDark: false },
+    });
+    const user = userEvent.setup();
+    render(<PartCameraPageClient draftId={draftId} partId={partId} />);
+    await screen.findByText(/alternator/i);
+
+    const file = new File(["fake-bytes"], "part.jpg", { type: "image/jpeg" });
+    const input = screen.getByLabelText(/choose photo/i);
+    await user.upload(input, file);
+
+    expect(captureFromFileMock).toHaveBeenCalledWith(file);
+    const doneButton = await screen.findByRole("button", { name: /^done$/i });
+    await waitFor(() => expect(doneButton).toBeEnabled());
   });
 });

@@ -3,8 +3,9 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { PhotoPicker } from "@/components/mobile/photo-picker";
 import { useCamera } from "@/hooks/use-camera";
-import { captureFrame } from "@/lib/offline/capture";
+import { captureFrame, captureFromFile } from "@/lib/offline/capture";
 import { useIntakeStore } from "@/lib/offline/store";
 
 export default function PartCameraPageClient({
@@ -47,6 +48,16 @@ export default function PartCameraPageClient({
     }
   }
 
+  async function handleFileSelected(file: File) {
+    const { blob, qualityFlags } = await captureFromFile(file);
+    await addPartPhoto(draftId, partId, {
+      id: crypto.randomUUID(),
+      blob,
+      qualityFlags,
+      capturedAt: new Date().toISOString(),
+    });
+  }
+
   if (!draft || !part) {
     return <p className="p-6 text-sm text-muted-foreground">Loading…</p>;
   }
@@ -86,6 +97,12 @@ export default function PartCameraPageClient({
           </p>
         )
       )}
+
+      <PhotoPicker
+        inputId="part-photo-picker"
+        label="Choose photo"
+        onFileSelected={(file) => void handleFileSelected(file)}
+      />
 
       {hasPhoto && (
         <ul className="grid gap-1">

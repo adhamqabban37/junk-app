@@ -4,8 +4,9 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PhotoPicker } from "@/components/mobile/photo-picker";
 import { useCamera } from "@/hooks/use-camera";
-import { captureFrame } from "@/lib/offline/capture";
+import { captureFrame, captureFromFile } from "@/lib/offline/capture";
 import { useIntakeStore } from "@/lib/offline/store";
 import type { VehicleDraft, VehicleImageAngle } from "@/lib/offline/types";
 
@@ -51,6 +52,18 @@ function VehicleForm({ draftId, draft }: { draftId: string; draft: VehicleDraft 
     } finally {
       setCapturing(false);
     }
+  }
+
+  async function handleFileSelected(file: File) {
+    if (!nextAngle) return;
+    const { blob, qualityFlags } = await captureFromFile(file);
+    await addExteriorPhoto(draftId, {
+      id: crypto.randomUUID(),
+      blob,
+      angle: nextAngle,
+      qualityFlags,
+      capturedAt: new Date().toISOString(),
+    });
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -154,6 +167,13 @@ function VehicleForm({ draftId, draft }: { draftId: string; draft: VehicleDraft 
           <p role="alert" className="text-sm text-destructive">
             {cameraError}
           </p>
+        )}
+        {nextAngle && (
+          <PhotoPicker
+            inputId="vehicle-photo-picker"
+            label={`Choose photo for ${nextAngle}`}
+            onFileSelected={(file) => void handleFileSelected(file)}
+          />
         )}
       </div>
 
