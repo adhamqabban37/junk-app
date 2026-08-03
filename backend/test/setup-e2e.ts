@@ -1,3 +1,5 @@
+import { inspect } from 'node:util';
+
 /**
  * Every e2e spec file boots a full Nest app (BullMQ Worker + Queue) in the
  * same Jest process (--runInBand). closeTestApp() already closes the Worker
@@ -23,21 +25,22 @@
  * suites finish ("Cannot log after tests are done"), so even a warning
  * here would itself become the failure it's trying to avoid. Anything else
  * still crashes loudly, since only this exact known signature is matched.
+ *
+ * Matched on the fully-expanded printed form of the error (via
+ * util.inspect, i.e. exactly what console.error(error) would show), not on
+ * error.stack or a specific nested property: two prior attempts at this
+ * fix both still hit the fallback branch in CI despite matching a
+ * hand-built reproduction of the expected shape locally, which only makes
+ * sense if the "at RedisConnection.emit .../redis-connection.js" frames
+ * visible in every CI occurrence belong to a *nested* error (e.g.
+ * ERR_UNHANDLED_ERROR's `.context`) rather than to the outer error's own
+ * `.stack` -- inspecting the whole object sidesteps needing to know which
+ * property actually holds it.
  */
 process.on('uncaughtException', (error: unknown) => {
-  const context =
-    error instanceof Error &&
-    (error as Error & { code?: string; context?: unknown }).code ===
-      'ERR_UNHANDLED_ERROR'
-      ? (error as Error & { context?: unknown }).context
-      : undefined;
-
+  const rendered = inspect(error, { depth: 10 });
   const isKnownBullMqTeardownRace =
-    context instanceof Error &&
-    context.message === 'Connection is closed.' &&
-    error instanceof Error &&
-    error.stack?.includes('bullmq') &&
-    error.stack?.includes('redis-connection');
+    rendered.includes('bullmq') && rendered.includes('redis-connection');
 
   if (isKnownBullMqTeardownRace) {
     return;
