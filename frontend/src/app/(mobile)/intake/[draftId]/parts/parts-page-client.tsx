@@ -91,14 +91,22 @@ export default function PartsPageClient({ draftId }: { draftId: string }) {
       {draft.parts.length > 0 && (
         <div className="space-y-2">
           <h2 className="text-sm font-medium">Added</h2>
+          {/* Clickable, not just a display row -- a part is added the moment
+              it's picked (before any photo exists), and camera capture can
+              fail (unsupported browser, permission denied). Without this,
+              a part stuck at 0 photos had no way back into its camera step
+              and no way to be removed, silently blocking Finish forever. */}
           <ul className="grid gap-1">
             {draft.parts.map((part) => (
-              <li
-                key={part.id}
-                className="flex items-center justify-between rounded-lg border border-border px-3 py-2 text-sm"
-              >
-                <span>{part.taxonomyName}</span>
-                <span className="text-muted-foreground">{part.photos.length} photos</span>
+              <li key={part.id}>
+                <Button
+                  variant="outline"
+                  className="w-full justify-between px-3 py-2 text-sm font-normal"
+                  onClick={() => router.push(`/intake/${draftId}/parts/${part.id}/camera`)}
+                >
+                  <span>{part.taxonomyName}</span>
+                  <span className="text-muted-foreground">{part.photos.length} photos</span>
+                </Button>
               </li>
             ))}
           </ul>

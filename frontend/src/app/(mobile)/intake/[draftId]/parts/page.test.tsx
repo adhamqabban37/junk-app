@@ -114,4 +114,19 @@ describe("PartsPageClient", () => {
     expect(await screen.findByText(/Alternator/)).toBeInTheDocument();
     expect(screen.getByText(/0 photos/i)).toBeInTheDocument();
   });
+
+  it("clicking an already-added part (e.g. one with 0 photos, camera failed the first time) navigates back to its camera step", async () => {
+    await useIntakeStore.getState().addPart(draftId, {
+      id: "part-1",
+      taxonomyId: "tax-alt",
+      taxonomyName: "Alternator",
+      photos: [],
+    });
+    const user = userEvent.setup();
+    render(<PartsPageClient draftId={draftId} />);
+
+    await user.click(await screen.findByRole("button", { name: /alternator.*0 photos/i }));
+
+    expect(pushMock).toHaveBeenCalledWith(`/intake/${draftId}/parts/part-1/camera`);
+  });
 });
