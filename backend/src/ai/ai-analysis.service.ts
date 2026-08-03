@@ -23,7 +23,7 @@ export class AiAnalysisService {
     config: ConfigService,
   ) {
     this.modelVersion =
-      config.get<string>('GEMINI_MODEL') ?? 'gemini-2.0-flash';
+      config.get<string>('GEMINI_MODEL') ?? 'gemini-flash-latest';
   }
 
   /**

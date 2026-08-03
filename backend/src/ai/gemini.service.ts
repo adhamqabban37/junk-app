@@ -24,11 +24,17 @@ confidence reflects how certain you are in this grade given image quality.`;
  * this is the only call site, and response_mime_type/inline image data are
  * both plain REST features). `fetchImpl` is injectable for tests.
  *
- * Default model is gemini-2.0-flash, confirmed live-reachable (auth + model
- * resolution both succeeded against the real API) — CLAUDE.md's "Gemini 3.5
- * Flash / 3.1 Flash-Lite" naming doesn't correspond to any model this API
- * actually serves; gemini-2.5-flash is confirmed live-deprecated for new
- * users (404). Override via GEMINI_MODEL once a specific tier is decided.
+ * Default model is gemini-flash-latest, a Google-maintained alias rather
+ * than a pinned version. Chosen after two consecutive pinned defaults died
+ * mid-project: gemini-2.0-flash (this file's original default) and
+ * gemini-2.5-flash both now 404 with "no longer available to new users" —
+ * confirmed live (2026-08-02, once GEMINI_API_KEY's billing was enabled and
+ * quota was no longer 0) via a real analyzePartImage()-shaped call (inline
+ * base64 image + responseMimeType: application/json) that round-tripped
+ * correctly through GeminiPartAnalysisSchema. gemini-flash-latest is
+ * Google's own recommended mitigation for exactly this churn. Override via
+ * GEMINI_MODEL for a pinned specific version if reproducibility matters
+ * more than avoiding this class of breakage.
  */
 @Injectable()
 export class GeminiService {
@@ -42,7 +48,8 @@ export class GeminiService {
     mimeType: string,
   ): Promise<GeminiPartAnalysis> {
     const apiKey = this.config.getOrThrow<string>('GEMINI_API_KEY');
-    const model = this.config.get<string>('GEMINI_MODEL') ?? 'gemini-2.0-flash';
+    const model =
+      this.config.get<string>('GEMINI_MODEL') ?? 'gemini-flash-latest';
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
     let response: Response;
