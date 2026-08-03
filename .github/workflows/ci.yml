@@ -67,14 +67,21 @@ jobs:
 
       - name: Run backend e2e (with retry)
         # A pre-existing, documented flake (see docs/PROGRESS.md's Phase 4
-        # "Test-infrastructure note"): booting the full Nest app repeatedly
-        # in one Jest process occasionally hits a BullMQ/Redis teardown race
-        # ("Unhandled error: Connection is closed") or, under CI's tighter
-        # resource limits, an ECONNRESET on the pooled-connection concurrent-
-        # tenant test. Documented failure rate is ~1-in-8 runs; retrying once
-        # is cheaper than chasing it further right now and matches how it's
-        # already triaged for local runs.
-        run: npm run test:e2e --workspace=backend || npm run test:e2e --workspace=backend
+        # "Test-infrastructure note" and the Post-Phase-7 CI notes): booting
+        # the full Nest app repeatedly in one Jest process occasionally hits
+        # a BullMQ/Redis teardown race ("Unhandled error: Connection is
+        # closed") -- test/setup-e2e.ts now stops that race from crashing
+        # the whole Jest process, but under CI's tighter/shared CPU it still
+        # shows up as a real, occasional ECONNRESET on the pooled-connection
+        # concurrent-tenant test (auth.e2e-spec.ts) and, more rarely,
+        # collateral test failures in whichever suite is running when it
+        # fires. Documented failure rate is ~1-in-8 runs locally, higher
+        # here; retrying up to 3 total attempts is cheaper than chasing full
+        # determinism further right now.
+        run: |
+          npm run test:e2e --workspace=backend \
+            || npm run test:e2e --workspace=backend \
+            || npm run test:e2e --workspace=backend
 
       - run: npm run build:backend
 
