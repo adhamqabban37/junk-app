@@ -2,7 +2,37 @@
 
 Tracks completion against `docs/BUILD_PLAN.md`. Check boxes as each phase's acceptance criteria are verified.
 
-## 🔴 Start here next session: the core pipeline doesn't actually connect end-to-end
+## 2026-08-05 — first real end-to-end run, and what it exposed
+
+**The product thesis finally ran end to end, live, for the first time.** A real worker session went VIN → 4 exterior photos → part → photo → Finish → sync → backend → Gemini, and produced a genuine grade on the user's own vehicle (`KMHGN4JE1FU096946`, Bumper (Front): **grade B, 85% confidence, `misalignment`/`scratch`**). Item 1 of the previous session's "still open" list is closed. Everything below was found by actually walking that path.
+
+**Fixed this session:**
+- **`Finish & queue for sync` only required *one* photographed part in the whole draft.** Select seven parts, photograph one, and all seven queue — the six with no `PartImage` get created server-side and then sit at `pending_ai` forever, because an AI job is only ever enqueued per *image*. Exactly what happened to `KMHGN4JE1FU096946` (7 parts, 1 image). Now gated per-part, and the blocked state names which parts still need a photo instead of rendering a dead disabled button.
+- **Inventory was read-only.** Managers could only re-grade from the Review Queue, so anything already approved/listed/sold was frozen at the AI's answer. Rows now expand to show the part's photos + an editable grade, saving through the same `recordCorrection()` path so the Moat log is unchanged. Needed a new `GET /parts/:partId/images/:imageId/file` (manager/owner, tenant-scoped) since auth is Bearer-token and `<img src>` can't carry a header.
+
+**🔴 Found and NOT fixed — read this first next session:**
+1. **Queued drafts never sync on their own if you were already online.** `registerSyncTriggers()` (`frontend/src/lib/offline/sync.ts`) only subscribes to the window `online` event — i.e. an offline→online *transition*. A worker who never lost signal presses "Finish & queue for sync", lands on Home, and nothing happens, ever; the only thing that actually uploads is the manual **Sync now** button on `/sync`. Every successful sync this session was manual. The offline case (the one the acceptance criteria exercised) works fine, which is why this survived the whole build. Fix is small — also drain the queue on mount/after queueing — but it is the difference between the app working and appearing broken to a real user.
+2. **The dev-mode service-worker reload loop is now actively blocking work**, not just a nuisance (see the note at the bottom of this file). It cost three separate fresh tabs this session and prevented live browser verification of the Inventory feature above — on a plain `/login`, before any new code ran. The fix the note itself proposes (skip `registerServiceWorker()` when `NODE_ENV === 'development'`) is still not implemented and is now clearly worth doing.
+3. **Six orphaned zero-photo parts** remain on `KMHGN4JE1FU096946` (Alternator, Bumper (Rear), Door (Driver Front), Fender (Left), Headlight (Right), + one more) from before the Finish fix. They can never be graded and no screen can delete them. Needs either a cleanup query or a "remove part" affordance.
+4. **The taxonomy has ~12 duplicate `Fender` rows** visible in the part picker — almost certainly `seed:taxonomy` run more than once without an upsert guard. Not investigated.
+5. **The camera does not work in this environment at all** (`Requested device not found`) — the `PhotoPicker` file-upload fallback is the only usable capture path here, and it works. Worth confirming real `getUserMedia` capture on an actual phone before trusting the camera path.
+
+**Not started:** AI multi-part scene detection (Gemini listing every part it can see across the exterior photos, surfaced for manager confirm/re-grade). Discussed and scoped with the user — AI suggests, human confirms — but no code written. No new API or key needed; Gemini is already wired and working.
+
+## ✅ Fixed (2026-08-03): `POST /vehicles/intake` now exists
+
+The gap described below is closed. `VehiclesController`/`VehiclesService` (`backend/src/vehicles/`) now implement `POST /vehicles/intake`:
+- Parses the multipart draft via `AnyFilesInterceptor` (dynamic field names `exteriorPhoto:{angle}:{id}` / `partPhoto:{partId}:{id}`, matched with regex/prefix, same as `buildIntakeFormData()` produces).
+- Creates one `Vehicle` (`vin`/`make`/`model`/`year`/`trim` from `decoded`, `decodedRaw` = `decoded.raw`), one `VehicleImage` per exterior photo, one `Part` per entry in `parts` (`PENDING_AI`), and `PartImage` rows + an AI-analysis queue job per part photo — all inlined in a single `withTenantContext` transaction (not a literal call into `PartsService.addImage()`, since that opens its own transaction on its own connection and wouldn't see the just-created, not-yet-committed `Part` row).
+- **Idempotency guard**: new nullable `intake_draft_id` column on `vehicles`, unique per tenant via a partial unique index (migration `1785816446099-AddVehicleIntakeDraftId.ts`). A retried `sync_failed` draft with the same `draftId` returns the already-created vehicle instead of creating a duplicate.
+- New e2e suite `backend/test/vehicles-intake.e2e-spec.ts` (5 tests, posts a real multipart request shaped exactly like the frontend's `buildIntakeFormData()`): rejects unauthenticated/missing-draftId/missing-vin, full happy path asserting Vehicle/VehicleImage/Part/PartImage all land correctly and the real AI queue grades the part end-to-end, and an idempotency test (same `draftId` posted twice → same `vehicleId`, only one `Vehicle` row).
+- Full backend suite after the change: 15/15 unit, 62/63 e2e (`lint`/`tsc --noEmit` clean). The one e2e failure is the pre-existing `app.e2e-spec.ts` BullMQ/ioredis teardown flake documented below (Phase 4) — unrelated file, no code from this change touches it, matches CI's existing `continue-on-error` treatment of that exact race.
+
+**Still open, not done in this pass:**
+1. Re-sync the user's actual real-world stuck draft (VIN `KMHGN4JE1FU096946`, tenant `eab0ca24-451f-48e7-a4ae-8de8a680a115`) through the live app now that the endpoint exists — needs the user's own browser/IndexedDB session, not something drivable from here. This is the first real live confirmation of a photo becoming a graded, reviewable Part end-to-end.
+2. Invalid `taxonomyId` in a `parts` entry currently surfaces as a raw 500 (Postgres FK violation bubbling up unhandled) rather than a clean 400 — acceptable for MVP since the client always sends taxonomy IDs it already fetched from `GET /taxonomy`, but worth a `QueryFailedError` catch if malformed drafts ever become a real-world occurrence.
+
+## 🔴 Original finding (2026-08-02) — kept for history
 
 Found 2026-08-02, late session, while helping the user debug their own stuck real-world draft (VIN `KMHGN4JE1FU096946`, tenant `eab0ca24-451f-48e7-a4ae-8de8a680a115`): **the mobile app's sync call has no matching backend route.**
 
