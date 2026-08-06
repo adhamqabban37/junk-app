@@ -19,6 +19,37 @@ Tracks completion against `docs/BUILD_PLAN.md`. Check boxes as each phase's acce
 
 **Not started:** AI multi-part scene detection (Gemini listing every part it can see across the exterior photos, surfaced for manager confirm/re-grade). Discussed and scoped with the user — AI suggests, human confirms — but no code written. No new API or key needed; Gemini is already wired and working.
 
+## Consolidated backlog (as of 2026-08-05)
+
+All 7 BUILD_PLAN phases are complete and the core pipeline is live-verified. This is everything known to be left, in rough priority order. Kept here rather than in chat so it survives the session.
+
+### P0 — makes the app feel broken to a real user
+- **Sync never fires automatically while online.** See finding 1 above. Highest-value fix in this list; it is why "Finish & queue for sync" appears to do nothing.
+- **Dev service-worker reload loop.** See finding 2 above. Costs real time every session and blocks live verification. Proposed fix (skip SW registration under `NODE_ENV=development`) is written down but not done.
+
+### P1 — real gaps in what's built
+- **No way to remove a part from a draft.** A part is created the moment it's picked; there is still no delete affordance anywhere in the worker flow. The Finish gate now prevents *shipping* a zero-photo part, but a worker who picks the wrong part has to photograph it anyway to proceed.
+- **Six orphaned zero-photo parts** on `KMHGN4JE1FU096946` — pre-existing data, ungradeable, undeletable from any screen.
+- **~12 duplicate `Fender` taxonomy rows** — likely `seed:taxonomy` run repeatedly with no upsert guard. Affects every worker's part picker.
+- **Real-device camera never verified.** `getUserMedia` fails in every environment used so far (`Requested device not found`); only the `PhotoPicker` fallback has ever been exercised. Needs one pass on an actual phone.
+- **Settings is missing the IntegrationCard (API keys)** that DESIGN_SPEC §3.15 specifies — only the AI confidence threshold was built.
+- **Ghost overlay is a generic centered box**, not the per-taxonomy reference silhouette DESIGN_SPEC §6 describes. No such art exists yet.
+- **Invalid `taxonomyId` on intake returns 500, not 400** (unhandled Postgres FK violation).
+
+### P2 — production readiness (never attempted; everything is local-only)
+- **Object storage.** `LocalFileStorage` writes to backend disk. This does not survive a real deployment (multiple instances, ephemeral containers) — S3/R2/GCS is a prerequisite for hosting anything, not a nice-to-have.
+- **Deployment itself**: hosting, managed Postgres w/ pgvector, production secrets, migration strategy. Never discussed.
+- **Transactional email.** No invite, password-reset, or notification flow exists; managers are created only by an owner typing a password into the Users screen.
+- **Backend e2e flake** (`users.e2e-spec.ts` / BullMQ cross-file teardown race) is `continue-on-error` in CI. Known, deliberately downgraded, still there.
+
+### P3 — schema built but unused
+`Embedding`, `PricingHistory`, and `Listing` entities exist with tables, RLS policies, and migrations, but are referenced **nowhere** in application code — verified by grep. Built day-one per the MEMORY.md decision to model the full schema up front. Harmless, but don't mistake their existence for working features: pgvector similarity search, price history, and marketplace listing state are all unimplemented.
+
+### P4 — roadmap, explicitly out of MVP scope
+eBay Trading API / Shopify GraphQL / Car-Part syndication (MVP ships CSV export only, and its `price` column is a hardcoded empty placeholder); AutoCare ACES fitment; MarketCheck or DataOne for richer VIN data than free NHTSA; dynamic pricing; YOLO/SAM custom models trained on the HumanCorrection Moat.
+
+**Doc inconsistency to resolve before anyone builds fitment:** ARCHITECTURE.md §5 says explicitly *avoid Hollander, move toward ACES*; DESIGN_SPEC.md §10 lists "Hollander Interchange mapping" as a Month 3-4 build item. These contradict. ARCHITECTURE's position also looks like the right one on cost/licensing grounds for an early-stage yard tool.
+
 ## ✅ Fixed (2026-08-03): `POST /vehicles/intake` now exists
 
 The gap described below is closed. `VehiclesController`/`VehiclesService` (`backend/src/vehicles/`) now implement `POST /vehicles/intake`:
