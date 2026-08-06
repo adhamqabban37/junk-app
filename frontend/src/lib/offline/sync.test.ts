@@ -93,13 +93,26 @@ describe("registerSyncTriggers", () => {
     });
   });
 
+  function setOnline(value: boolean) {
+    Object.defineProperty(navigator, "onLine", {
+      configurable: true,
+      get: () => value,
+    });
+  }
+
   it("triggers a sync attempt when the browser's online event fires", async () => {
+    // Start offline so neither the on-registration drain nor the
+    // queued-draft subscription fires -- this test is specifically about
+    // connectivity returning, which is the only trigger left in that state.
+    setOnline(false);
     const draft = await useIntakeStore.getState().createDraft();
     await useIntakeStore.getState().queueForSync(draft.id);
 
     const client: SyncClient = { syncDraft: vi.fn().mockResolvedValue(undefined) };
     const unregister = registerSyncTriggers(client);
+    expect(client.syncDraft).not.toHaveBeenCalled();
 
+    setOnline(true);
     window.dispatchEvent(new Event("online"));
     // syncPendingDrafts is fired-and-forgotten from the event handler.
     await vi.waitFor(() => {
@@ -109,6 +122,63 @@ describe("registerSyncTriggers", () => {
     unregister();
     window.dispatchEvent(new Event("online"));
     expect(client.syncDraft).toHaveBeenCalledTimes(1);
+  });
+
+  it("drains a draft left queued by an earlier session as soon as triggers are registered", async () => {
+    setOnline(true);
+    const draft = await useIntakeStore.getState().createDraft();
+    await useIntakeStore.getState().queueForSync(draft.id);
+
+    const client: SyncClient = { syncDraft: vi.fn().mockResolvedValue(undefined) };
+    const unregister = registerSyncTriggers(client);
+
+    await vi.waitFor(() => {
+      expect(client.syncDraft).toHaveBeenCalledTimes(1);
+    });
+    expect(useIntakeStore.getState().drafts.find((d) => d.id === draft.id)?.status).toBe("synced");
+    unregister();
+  });
+
+  it("syncs a draft queued while already online, with no online event ever firing", async () => {
+    // The regression this guards: `online` only fires on an
+    // offline->online transition, so a worker who never lost signal used to
+    // press Finish and have nothing happen at all.
+    setOnline(true);
+    const client: SyncClient = { syncDraft: vi.fn().mockResolvedValue(undefined) };
+    const unregister = registerSyncTriggers(client);
+
+    const draft = await useIntakeStore.getState().createDraft();
+    expect(client.syncDraft).not.toHaveBeenCalled();
+
+    await useIntakeStore.getState().queueForSync(draft.id);
+
+    await vi.waitFor(() => {
+      expect(client.syncDraft).toHaveBeenCalledTimes(1);
+    });
+    expect(useIntakeStore.getState().drafts.find((d) => d.id === draft.id)?.status).toBe("synced");
+    unregister();
+  });
+
+  it("does not retry in a loop when a sync fails (sync_failed raises the pending count)", async () => {
+    setOnline(true);
+    const client: SyncClient = {
+      syncDraft: vi.fn().mockRejectedValue(new Error("network unreachable")),
+    };
+    const unregister = registerSyncTriggers(client);
+
+    const draft = await useIntakeStore.getState().createDraft();
+    await useIntakeStore.getState().queueForSync(draft.id);
+
+    await vi.waitFor(() => {
+      expect(client.syncDraft).toHaveBeenCalledTimes(1);
+    });
+    // Give any re-entrant trigger a chance to fire before asserting it didn't.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(client.syncDraft).toHaveBeenCalledTimes(1);
+    expect(useIntakeStore.getState().drafts.find((d) => d.id === draft.id)?.status).toBe(
+      "sync_failed",
+    );
+    unregister();
   });
 
   it("does not throw when the Background Sync API is unavailable (e.g. no service worker in this test environment)", () => {

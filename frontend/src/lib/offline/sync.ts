@@ -71,20 +71,68 @@ export async function syncPendingDrafts(client: SyncClient): Promise<void> {
   }
 }
 
+function pendingCount(state: { drafts: VehicleDraft[] }): number {
+  return state.drafts.filter((d) => d.status === "queued" || d.status === "sync_failed").length;
+}
+
 /**
- * Wires up automatic retry when connectivity returns. The `online` event
- * listener is the primary, universally-supported mechanism. Background Sync
- * API registration is attempted best-effort on top of it — it isn't
- * supported everywhere (e.g. Safari) and needs an installed service worker,
- * so failure here is silently non-fatal. `registerServiceWorker()`
- * (`lib/pwa.ts`, registered in `(mobile)/layout.tsx`) must have already run
+ * Wires up every trigger that should drain the pending-draft queue.
+ *
+ * The `online` event alone is not enough, and shipping only that was a real
+ * bug: it fires on an offline->online *transition*, so a worker with an
+ * uninterrupted connection could press "Finish & queue for sync" and have
+ * the draft sit in IndexedDB forever, with the app looking like the button
+ * did nothing. The offline path (the one the Phase 3 acceptance criteria
+ * exercised) worked fine, which is exactly why it went unnoticed. Hence
+ * three triggers:
+ *
+ *  1. On registration — a draft queued in an earlier session/app launch.
+ *     Also covers the store hydrating from IndexedDB after this runs, via
+ *     the subscription below.
+ *  2. When a draft *becomes* pending — the "worker just pressed Finish
+ *     while online" case, where no `online` event will ever fire.
+ *  3. On `online` — connectivity actually returning, the original case.
+ *
+ * Background Sync API registration is attempted best-effort on top — it
+ * isn't supported everywhere (e.g. Safari) and needs an installed service
+ * worker, so failure is silently non-fatal. `registerServiceWorker()`
+ * (`lib/pwa.ts`, called from `(mobile)/layout.tsx`) must have already run
  * for `navigator.serviceWorker.ready` to resolve at all.
  */
 export function registerSyncTriggers(client: SyncClient): () => void {
+  // syncPendingDrafts() writes back to the store on every draft it touches
+  // (markSyncing/markSynced/markSyncFailed), which re-enters the
+  // subscription below. This flag is what stops that from recursing --
+  // notably, a draft going to sync_failed *raises* the pending count, so
+  // without it a failing sync would re-trigger itself indefinitely.
+  let draining = false;
+
+  async function drain(): Promise<void> {
+    if (draining) return;
+    // navigator.onLine's true value is unreliable (it only proves a local
+    // link, not reachability), but its false value is trustworthy enough to
+    // skip work we know will fail -- the online listener will pick it up.
+    if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+    draining = true;
+    try {
+      await syncPendingDrafts(client);
+    } finally {
+      draining = false;
+    }
+  }
+
   const handleOnline = () => {
-    void syncPendingDrafts(client);
+    void drain();
   };
   window.addEventListener("online", handleOnline);
+
+  const unsubscribe = useIntakeStore.subscribe((state, prev) => {
+    if (pendingCount(state) > pendingCount(prev)) {
+      void drain();
+    }
+  });
+
+  void drain();
 
   void (async () => {
     try {
@@ -97,10 +145,13 @@ export function registerSyncTriggers(client: SyncClient): () => void {
       };
       await syncCapable.sync.register("sync-drafts");
     } catch {
-      // Unsupported or unavailable in this environment — the online
-      // listener above already covers the acceptance-critical path.
+      // Unsupported or unavailable in this environment — the triggers
+      // above already cover the acceptance-critical paths.
     }
   })();
 
-  return () => window.removeEventListener("online", handleOnline);
+  return () => {
+    window.removeEventListener("online", handleOnline);
+    unsubscribe();
+  };
 }
