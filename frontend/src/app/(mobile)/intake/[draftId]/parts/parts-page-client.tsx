@@ -57,7 +57,13 @@ export default function PartsPageClient({ draftId }: { draftId: string }) {
     ? pickable.filter((item) => item.name.toLowerCase().includes(query.trim().toLowerCase()))
     : pickable;
 
-  const hasPhotographedPart = (draft?.parts ?? []).some((p) => p.photos.length > 0);
+  const parts = draft?.parts ?? [];
+  const unphotographedParts = parts.filter((p) => p.photos.length === 0);
+  // Every added part needs a photo before Finish, not just one anywhere in
+  // the draft -- otherwise a part whose camera step failed (or was skipped)
+  // syncs with zero images and sits stuck at pending_ai forever server-side,
+  // since no AI job is ever queued for a part with no PartImage.
+  const canFinish = parts.length > 0 && unphotographedParts.length === 0;
 
   async function handleSelect(item: TaxonomyItem) {
     const part = {
@@ -151,9 +157,15 @@ export default function PartsPageClient({ draftId }: { draftId: string }) {
         </div>
       </div>
 
+      {parts.length > 0 && unphotographedParts.length > 0 && (
+        <p role="alert" className="text-sm text-destructive">
+          Still needs a photo: {unphotographedParts.map((p) => p.taxonomyName).join(", ")}
+        </p>
+      )}
+
       <Button
         className="w-full"
-        disabled={!hasPhotographedPart || finishing}
+        disabled={!canFinish || finishing}
         onClick={() => void handleFinish()}
       >
         Finish &amp; queue for sync

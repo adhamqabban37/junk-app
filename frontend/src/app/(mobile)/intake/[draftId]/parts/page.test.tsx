@@ -75,6 +75,32 @@ describe("PartsPageClient", () => {
     expect(screen.getByRole("button", { name: /finish/i })).toBeDisabled();
   });
 
+  it("keeps Finish disabled and names the part if any added part still has zero photos", async () => {
+    await useIntakeStore.getState().addPart(draftId, {
+      id: "part-1",
+      taxonomyId: "tax-alt",
+      taxonomyName: "Alternator",
+      photos: [
+        {
+          id: "photo-1",
+          blob: new Blob(["x"]),
+          qualityFlags: { blurry: false, tooDark: false },
+          capturedAt: new Date().toISOString(),
+        },
+      ],
+    });
+    await useIntakeStore.getState().addPart(draftId, {
+      id: "part-2",
+      taxonomyId: "tax-radiator",
+      taxonomyName: "Radiator",
+      photos: [],
+    });
+    render(<PartsPageClient draftId={draftId} />);
+
+    expect(await screen.findByRole("button", { name: /finish/i })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Radiator");
+  });
+
   it("Finish queues the draft for sync and returns to Home once a part has a photo", async () => {
     await useIntakeStore.getState().addPart(draftId, {
       id: "part-1",
@@ -111,8 +137,9 @@ describe("PartsPageClient", () => {
 
     render(<PartsPageClient draftId={draftId} />);
 
-    expect(await screen.findByText(/Alternator/)).toBeInTheDocument();
-    expect(screen.getByText(/0 photos/i)).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: /alternator.*0 photos/i }),
+    ).toBeInTheDocument();
   });
 
   it("clicking an already-added part (e.g. one with 0 photos, camera failed the first time) navigates back to its camera step", async () => {
