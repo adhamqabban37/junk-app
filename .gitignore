@@ -17,6 +17,10 @@ backend/dist/
 # Testing
 coverage/
 
+# Uploaded part/vehicle photos (LocalFileStorage's root) -- runtime tenant
+# data, not source. A real deployment swaps this for S3/GCS anyway.
+backend/uploads/
+
 # Logs
 npm-debug.log*
 yarn-debug.log*

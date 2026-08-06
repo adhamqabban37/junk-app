@@ -19,6 +19,20 @@ export class Vehicle {
   @Column({ name: 'tenant_id', type: 'uuid' })
   tenantId!: string;
 
+  /**
+   * Client-generated intake draft id, unique per tenant (partial unique
+   * index, migration-enforced — see AddVehicleIntakeDraftId). Lets
+   * POST /vehicles/intake detect a retried sync and return the
+   * already-created vehicle instead of creating a duplicate.
+   */
+  @Column({
+    name: 'intake_draft_id',
+    type: 'varchar',
+    length: 64,
+    nullable: true,
+  })
+  intakeDraftId!: string | null;
+
   @Column({ type: 'varchar', length: 17 })
   vin!: string;
 
