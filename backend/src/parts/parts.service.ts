@@ -233,6 +233,33 @@ export class PartsService {
     };
   }
 
+  /**
+   * Serves the raw bytes of a part's photo for the Inventory/Review Queue
+   * UI. Content-type is inferred from the stored extension since
+   * PartImage doesn't persist the original mimetype -- addImage()/the
+   * intake endpoint both already normalize to .jpg/.png on save (see
+   * extensionFor() in vehicles.service.ts), so this is a safe round-trip.
+   */
+  async getImageFile(
+    tenantId: string,
+    partId: string,
+    imageId: string,
+  ): Promise<{ buffer: Buffer; contentType: string }> {
+    return withTenantContext(this.dataSource, tenantId, async (manager) => {
+      const image = await manager
+        .getRepository(PartImage)
+        .findOne({ where: { id: imageId, partId } });
+      if (!image) {
+        throw new NotFoundException('Part image not found');
+      }
+      const buffer = await this.storage.read(image.url);
+      const contentType = image.url.toLowerCase().endsWith('.png')
+        ? 'image/png'
+        : 'image/jpeg';
+      return { buffer, contentType };
+    });
+  }
+
   async detail(tenantId: string, partId: string) {
     return withTenantContext(this.dataSource, tenantId, async (manager) => {
       const part = await manager

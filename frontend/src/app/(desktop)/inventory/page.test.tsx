@@ -3,10 +3,19 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import InventoryPage from "./page";
 import { useAuthSession } from "@/lib/auth-session";
-import type { PartListItem, PartListResult } from "@/lib/api/parts";
+import type { PartDetail, PartListItem, PartListResult } from "@/lib/api/parts";
 
-vi.mock("@/lib/api/parts", () => ({ listParts: vi.fn() }));
-import { listParts } from "@/lib/api/parts";
+vi.mock("@/lib/api/parts", () => ({ listParts: vi.fn(), getPart: vi.fn() }));
+import { getPart, listParts } from "@/lib/api/parts";
+
+vi.mock("@/lib/api/corrections", () => ({ recordCorrection: vi.fn() }));
+import { recordCorrection } from "@/lib/api/corrections";
+
+// Object-URL fetching/rendering is PartPhoto's own concern -- stub it here
+// so this file only tests Inventory's click-to-view-detail wiring.
+vi.mock("@/components/desktop/part-photo", () => ({
+  PartPhoto: ({ imageId }: { imageId: string }) => <div data-testid={`part-photo-${imageId}`}>photo</div>,
+}));
 
 function makePart(i: number): PartListItem {
   return {
@@ -29,6 +38,8 @@ describe("InventoryPage", () => {
       restored: true,
     });
     vi.mocked(listParts).mockReset();
+    vi.mocked(getPart).mockReset();
+    vi.mocked(recordCorrection).mockReset();
 
     // jsdom performs no real layout -- @tanstack/react-virtual needs a
     // non-zero viewport to compute which rows are actually visible, and
@@ -96,6 +107,45 @@ describe("InventoryPage", () => {
         "fake-token",
         expect.objectContaining({ status: ["approved"] }),
       ),
+    );
+  });
+
+  it("clicking a row shows its photos and lets a manager change and save the grade", async () => {
+    const items = [makePart(1)];
+    vi.mocked(listParts).mockResolvedValue({ items, total: 1, page: 1, pageSize: 1000 });
+    const detail: PartDetail = {
+      id: "part-1",
+      status: "pending_review",
+      createdAt: new Date().toISOString(),
+      taxonomyId: "tax-1",
+      taxonomyName: "Part 1",
+      vehicle: null,
+      photos: [{ id: "photo-1", url: "part-1/photo-1.jpg" }],
+      latestAnalysis: {
+        id: "analysis-1",
+        grade: "C",
+        damageCodes: ["scratch"],
+        confidence: 0.6,
+        status: "complete",
+        rawJson: null,
+      },
+    };
+    vi.mocked(getPart).mockResolvedValue(detail);
+    vi.mocked(recordCorrection).mockResolvedValue({ id: "correction-1" });
+    const user = userEvent.setup();
+
+    render(<InventoryPage />);
+    await user.click(await screen.findByText("Part 1"));
+
+    expect(await screen.findByTestId("part-photo-photo-1")).toBeInTheDocument();
+    expect(getPart).toHaveBeenCalledWith("fake-token", "part-1");
+
+    const gradeSelect = await screen.findByLabelText(/grade/i);
+    await user.selectOptions(gradeSelect, "A");
+    await user.click(screen.getByRole("button", { name: /save grade/i }));
+
+    await waitFor(() =>
+      expect(recordCorrection).toHaveBeenCalledWith("fake-token", "analysis-1", "grade", "A"),
     );
   });
 });

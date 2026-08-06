@@ -62,6 +62,27 @@ export function getPart(token: string, id: string, fetchImpl?: typeof fetch): Pr
   return authFetch<PartDetail>(`/parts/${id}`, { token }, fetchImpl);
 }
 
+/**
+ * Auth is Bearer-token-based (no cookies), so a plain <img src> can't hit
+ * the image endpoint directly -- it has to be fetched with the
+ * Authorization header and turned into an object URL instead.
+ */
+export async function fetchPartImageObjectUrl(
+  token: string,
+  partId: string,
+  imageId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string> {
+  const res = await fetchImpl(`${apiBaseUrl()}/parts/${partId}/images/${imageId}/file`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to load image (status ${res.status})`);
+  }
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
+}
+
 export function approvePart(token: string, id: string, fetchImpl?: typeof fetch): Promise<{ status: string }> {
   return authFetch<{ status: string }>(`/parts/${id}/approve`, { token, method: "POST" }, fetchImpl);
 }

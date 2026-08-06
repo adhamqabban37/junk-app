@@ -2,8 +2,13 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { Button } from "@/components/ui/button";
+import { PartPhoto } from "@/components/desktop/part-photo";
 import { useAuthSession } from "@/lib/auth-session";
-import { listParts, type PartListItem, type PartStatus } from "@/lib/api/parts";
+import { recordCorrection } from "@/lib/api/corrections";
+import { getPart, listParts, type PartDetail, type PartListItem, type PartStatus } from "@/lib/api/parts";
+
+const GRADES = ["A", "B", "C"] as const;
 
 const STATUS_OPTIONS: { value: PartStatus | ""; label: string }[] = [
   { value: "", label: "All statuses" },
@@ -32,6 +37,47 @@ export default function InventoryPage() {
   const [error, setError] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedDetail, setSelectedDetail] = useState<PartDetail | null>(null);
+  const [detailError, setDetailError] = useState(false);
+  const [gradeDraft, setGradeDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  function handleSelectRow(item: PartListItem) {
+    if (!token) return;
+    setSelectedId(item.id);
+    setSelectedDetail(null);
+    setDetailError(false);
+    getPart(token, item.id)
+      .then((detail) => {
+        setSelectedDetail(detail);
+        setGradeDraft(detail.latestAnalysis?.grade ?? "");
+      })
+      .catch(() => setDetailError(true));
+  }
+
+  async function handleSaveGrade() {
+    if (!token || !selectedDetail?.latestAnalysis || !gradeDraft) return;
+    setSaving(true);
+    try {
+      await recordCorrection(token, selectedDetail.latestAnalysis.id, "grade", gradeDraft);
+      setSelectedDetail((prev) =>
+        prev && prev.latestAnalysis ? { ...prev, latestAnalysis: { ...prev.latestAnalysis, grade: gradeDraft as "A" | "B" | "C" } } : prev,
+      );
+      setItems((prev) =>
+        prev
+          ? prev.map((p) =>
+              p.id === selectedDetail.id && p.latestAnalysis
+                ? { ...p, latestAnalysis: { ...p.latestAnalysis, grade: gradeDraft as "A" | "B" | "C" } }
+                : p,
+            )
+          : prev,
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
 
   useEffect(() => {
     if (!token) return;
@@ -121,9 +167,13 @@ export default function InventoryPage() {
                   <div
                     key={item.id}
                     role="row"
+                    aria-selected={item.id === selectedId}
                     data-testid={`inventory-row-${item.id}`}
-                    className="absolute left-0 top-0 grid w-full grid-cols-5 items-center gap-4 border-b border-border px-4 text-sm"
+                    className={`absolute left-0 top-0 grid w-full cursor-pointer grid-cols-5 items-center gap-4 border-b px-4 text-sm hover:bg-muted/50 ${
+                      item.id === selectedId ? "border-primary bg-muted/50" : "border-border"
+                    }`}
                     style={{ height: virtualRow.size, transform: `translateY(${virtualRow.start}px)` }}
+                    onClick={() => handleSelectRow(item)}
                   >
                     <span role="cell">{item.taxonomyName ?? "Part"}</span>
                     <span role="cell">
@@ -141,6 +191,77 @@ export default function InventoryPage() {
               })}
             </div>
           </div>
+        </div>
+      )}
+
+      {selectedId && (
+        <div className="rounded-xl border border-border p-4">
+          {detailError ? (
+            <div role="alert" className="flex items-center gap-3 text-sm text-destructive">
+              <span>Couldn&apos;t load this part&apos;s details.</span>
+              <button
+                type="button"
+                className="font-medium underline"
+                onClick={() => {
+                  const item = rows.find((r) => r.id === selectedId);
+                  if (item) handleSelectRow(item);
+                }}
+              >
+                Retry
+              </button>
+            </div>
+          ) : !selectedDetail ? (
+            <p className="text-sm text-muted-foreground">Loading part details…</p>
+          ) : (
+            <div className="flex flex-col gap-4">
+              <h2 className="font-semibold">{selectedDetail.taxonomyName ?? "Part"}</h2>
+
+              {selectedDetail.photos.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No photos on this part.</p>
+              ) : (
+                <div className="flex flex-wrap gap-3">
+                  {selectedDetail.photos.map((photo) => (
+                    <PartPhoto key={photo.id} token={token!} partId={selectedDetail.id} imageId={photo.id} />
+                  ))}
+                </div>
+              )}
+
+              {!selectedDetail.latestAnalysis ? (
+                <p className="text-sm text-muted-foreground">No AI analysis yet — grade can&apos;t be edited.</p>
+              ) : (
+                <div className="flex items-end gap-3">
+                  <div className="space-y-1">
+                    <label htmlFor="inventory-grade" className="text-xs font-medium text-muted-foreground">
+                      Grade
+                    </label>
+                    <select
+                      id="inventory-grade"
+                      value={gradeDraft}
+                      onChange={(e) => setGradeDraft(e.target.value)}
+                      className="block rounded-lg border border-input bg-transparent px-2 py-1.5 text-sm"
+                    >
+                      {GRADES.map((g) => (
+                        <option key={g} value={g}>
+                          {g}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <Button
+                    disabled={saving || gradeDraft === (selectedDetail.latestAnalysis.grade ?? "")}
+                    onClick={() => void handleSaveGrade()}
+                  >
+                    Save grade
+                  </Button>
+                  {selectedDetail.latestAnalysis.damageCodes.length > 0 && (
+                    <p className="text-sm text-muted-foreground">
+                      Damage: {selectedDetail.latestAnalysis.damageCodes.join(", ")}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

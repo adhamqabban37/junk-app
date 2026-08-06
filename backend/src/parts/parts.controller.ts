@@ -9,11 +9,13 @@ import {
   ParseUUIDPipe,
   Post,
   Query,
+  Res,
   UploadedFile,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import type { Response } from 'express';
 import { memoryStorage } from 'multer';
 import type { JwtPayload } from '../auth/auth.service';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -44,6 +46,28 @@ export class PartsController {
       file,
     );
     return { id: partImage.id, url: partImage.url };
+  }
+
+  // Manager/owner only, same as detail()/list() -- this is the Inventory
+  // and Review Queue UI's image viewer, not part of the worker intake path.
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.MANAGER, UserRole.OWNER)
+  @Get(':partId/images/:imageId/file')
+  async getImageFile(
+    @CurrentUser() user: JwtPayload,
+    @Param('partId', ParseUUIDPipe) partId: string,
+    @Param('imageId', ParseUUIDPipe) imageId: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    const { buffer, contentType } = await this.partsService.getImageFile(
+      user.tenantId,
+      partId,
+      imageId,
+    );
+    // No passthrough: Nest's default handling would JSON-serialize the
+    // Buffer return value instead of sending raw bytes, so the response
+    // must be sent directly here.
+    res.set('Content-Type', contentType).send(buffer);
   }
 
   @UseGuards(RolesGuard)
