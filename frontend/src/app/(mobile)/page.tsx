@@ -40,7 +40,15 @@ export default function HomePage() {
     <div className="flex flex-1 flex-col gap-6 p-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">Vehicles</h1>
-        <Button onClick={() => void handleNewVehicle()}>New Vehicle</Button>
+        <div className="flex items-center gap-2">
+          {/* Not /vehicles: that path already belongs to the desktop
+              dashboard's own screen, and Next route groups don't namespace
+              URLs -- two pages resolving to one path is a build error. */}
+          <Button variant="outline" onClick={() => router.push("/previous-vehicles")}>
+            Previous
+          </Button>
+          <Button onClick={() => void handleNewVehicle()}>New Vehicle</Button>
+        </div>
       </div>
 
       {inProgress.length === 0 ? (

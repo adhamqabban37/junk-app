@@ -6,13 +6,14 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import type { Queue } from 'bullmq';
-import { DataSource, FindOptionsWhere } from 'typeorm';
+import { DataSource, FindOptionsWhere, In } from 'typeorm';
 import {
   AI_ANALYSIS_QUEUE,
   AiAnalysisJobData,
 } from '../ai/ai-analysis.processor';
 import { Part, PartStatus } from '../database/entities/part.entity';
 import { PartImage } from '../database/entities/part-image.entity';
+import { PartTaxonomy } from '../database/entities/part-taxonomy.entity';
 import {
   VehicleImage,
   VehicleImageAngle,
@@ -255,10 +256,26 @@ export class VehiclesService {
     });
   }
 
-  async detail(
+  /**
+   * Attaches another exterior photo to an already-synced vehicle, so an
+   * attendant can re-shoot a dark or missed angle days after intake. Unlike
+   * part photos, exterior shots are not AI-analyzed, so nothing is enqueued.
+   */
+  async addImage(
     tenantId: string,
     vehicleId: string,
-  ): Promise<Vehicle & { parts: Part[] }> {
+    angle: string | undefined,
+    file: { buffer: Buffer; mimetype: string },
+  ): Promise<VehicleImage> {
+    if (
+      !angle ||
+      !(Object.values(VehicleImageAngle) as string[]).includes(angle)
+    ) {
+      throw new BadRequestException(
+        `angle must be one of: ${Object.values(VehicleImageAngle).join(', ')}`,
+      );
+    }
+
     return withTenantContext(this.dataSource, tenantId, async (manager) => {
       const vehicle = await manager
         .getRepository(Vehicle)
@@ -266,10 +283,98 @@ export class VehiclesService {
       if (!vehicle) {
         throw new NotFoundException('Vehicle not found');
       }
+
+      const relativePath = await this.storage.save(
+        `${tenantId}/${vehicleId}/exterior-${randomUUID()}.${extensionFor(file.mimetype)}`,
+        file.buffer,
+      );
+      return manager.getRepository(VehicleImage).save(
+        manager.getRepository(VehicleImage).create({
+          tenantId,
+          vehicleId,
+          angle: angle as VehicleImageAngle,
+          url: relativePath,
+        }),
+      );
+    });
+  }
+
+  /** Mirrors PartsService.getImageFile(); see the content-type note there. */
+  async getImageFile(
+    tenantId: string,
+    vehicleId: string,
+    imageId: string,
+  ): Promise<{ buffer: Buffer; contentType: string }> {
+    return withTenantContext(this.dataSource, tenantId, async (manager) => {
+      const image = await manager
+        .getRepository(VehicleImage)
+        .findOne({ where: { id: imageId, vehicleId } });
+      if (!image) {
+        throw new NotFoundException('Vehicle image not found');
+      }
+      const buffer = await this.storage.read(image.url);
+      const contentType = image.url.toLowerCase().endsWith('.png')
+        ? 'image/png'
+        : 'image/jpeg';
+      return { buffer, contentType };
+    });
+  }
+
+  /**
+   * Enriched beyond the raw entities because this backs the attendant's
+   * "reopen a previous vehicle" screen: a worker picking which part to
+   * re-shoot needs the part's *name* and how many photos it already has,
+   * neither of which lives on the Part row.
+   */
+  async detail(tenantId: string, vehicleId: string) {
+    return withTenantContext(this.dataSource, tenantId, async (manager) => {
+      const vehicle = await manager
+        .getRepository(Vehicle)
+        .findOne({ where: { id: vehicleId } });
+      if (!vehicle) {
+        throw new NotFoundException('Vehicle not found');
+      }
+      // Sequential, not Promise.all: these share withTenantContext's single
+      // transactional client, which can't interleave queries.
       const parts = await manager
         .getRepository(Part)
-        .find({ where: { vehicleId } });
-      return { ...vehicle, parts };
+        .find({ where: { vehicleId }, order: { createdAt: 'ASC' } });
+      const images = await manager
+        .getRepository(VehicleImage)
+        .find({ where: { vehicleId }, order: { createdAt: 'ASC' } });
+
+      const taxonomyIds = [...new Set(parts.map((p) => p.taxonomyId))];
+      const taxonomies = taxonomyIds.length
+        ? await manager
+            .getRepository(PartTaxonomy)
+            .findBy({ id: In(taxonomyIds) })
+        : [];
+      const partIds = parts.map((p) => p.id);
+      const photoCounts = partIds.length
+        ? await manager
+            .getRepository(PartImage)
+            .createQueryBuilder('img')
+            .select('img.partId', 'partId')
+            .addSelect('COUNT(*)', 'count')
+            .where('img.partId IN (:...partIds)', { partIds })
+            .groupBy('img.partId')
+            .getRawMany<{ partId: string; count: string }>()
+        : [];
+
+      const taxonomyById = new Map(taxonomies.map((t) => [t.id, t]));
+      const photoCountByPart = new Map(
+        photoCounts.map((c): [string, number] => [c.partId, Number(c.count)]),
+      );
+
+      return {
+        ...vehicle,
+        images,
+        parts: parts.map((part) => ({
+          ...part,
+          taxonomyName: taxonomyById.get(part.taxonomyId)?.name ?? null,
+          photosCount: photoCountByPart.get(part.id) ?? 0,
+        })),
+      };
     });
   }
 }

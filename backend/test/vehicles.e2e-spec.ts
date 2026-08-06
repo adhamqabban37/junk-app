@@ -144,17 +144,26 @@ describe('Vehicles (e2e)', () => {
     await request(app.getHttpServer()).get('/vehicles').expect(401);
   });
 
-  it('rejects a worker (manager/owner only)', async () => {
+  it('allows a worker to list vehicles (they reopen previous vehicles to add photos)', async () => {
+    // Deliberately not manager/owner-only: an attendant standing at a car
+    // days after intake has to be able to find it to re-shoot a bad angle.
+    // RLS still confines the result to their own tenant.
     const login = await request(app.getHttpServer())
       .post('/auth/login/pin')
       .send({ tenantId: tenant.id, userId: worker.id, pin: WORKER_PIN })
       .expect(200);
     const token = (login.body as { accessToken: string }).accessToken;
 
-    await request(app.getHttpServer())
+    const res = await request(app.getHttpServer())
       .get('/vehicles')
       .set('Authorization', `Bearer ${token}`)
-      .expect(403);
+      .expect(200);
+
+    const body = res.body as { items: Array<{ vin: string }> };
+    expect(body.items.map((v) => v.vin).sort()).toEqual([
+      'VEHATESTVIN12345',
+      'VEHBTESTVIN12345',
+    ]);
   });
 
   it('lists only the caller tenant vehicles, with parts count, never another tenant', async () => {
