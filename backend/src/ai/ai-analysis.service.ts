@@ -105,9 +105,22 @@ export class AiAnalysisService {
         return;
       }
 
+      // findOne, not findOneOrFail: by the time a job's retries are spent
+      // the image can legitimately be gone (its part, or its whole tenant,
+      // was deleted while the job was in flight). There is nothing left to
+      // escalate to manual grading, and throwing here propagates out of
+      // onFailed -- a fire-and-forget BullMQ event handler -- which means an
+      // unhandled rejection that kills the entire API process. That is not
+      // hypothetical: it took the dev server down, and it is the real cause
+      // behind the "BullMQ teardown flake" that has been failing e2e runs
+      // (a suite deletes its tenant in afterAll while one of its jobs is
+      // still retrying on the shared Redis queue).
       const partImage = await manager
         .getRepository(PartImage)
-        .findOneOrFail({ where: { id: partImageId } });
+        .findOne({ where: { id: partImageId } });
+      if (!partImage) {
+        return;
+      }
 
       await analysisRepo.upsert(
         {

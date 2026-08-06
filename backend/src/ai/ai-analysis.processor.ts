@@ -41,10 +41,24 @@ export class AiAnalysisProcessor extends WorkerHost {
     if (!job) return;
     const maxAttempts = job.opts.attempts ?? 1;
     if (job.attemptsMade >= maxAttempts) {
-      await this.aiAnalysisService.handleExhaustedRetries(
-        job.data.tenantId,
-        job.data.partImageId,
-      );
+      // BullMQ invokes worker event handlers fire-and-forget: it never
+      // awaits this promise, so anything that escapes here is an unhandled
+      // rejection, which on Node 15+ terminates the process. Escalating a
+      // failed job to manual grading must never be able to take the API
+      // down with it -- log and move on.
+      try {
+        await this.aiAnalysisService.handleExhaustedRetries(
+          job.data.tenantId,
+          job.data.partImageId,
+        );
+      } catch (error) {
+        if (process.env.NODE_ENV !== 'test') {
+          console.error(
+            `[AiAnalysisProcessor] failed to escalate job ${job.id} to manual grading`,
+            error,
+          );
+        }
+      }
     }
   }
 

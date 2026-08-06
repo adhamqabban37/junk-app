@@ -65,4 +65,18 @@ describe('AiAnalysisProcessor', () => {
     await processor.onFailed(job);
     expect(handleExhaustedRetries).toHaveBeenCalled();
   });
+
+  it('onFailed swallows an escalation error instead of letting it kill the process', async () => {
+    // BullMQ never awaits worker event handlers, so anything thrown here
+    // becomes an unhandled rejection and terminates the API on Node 15+.
+    // This really happened: a job whose PartImage had been deleted mid-flight
+    // took the dev server down.
+    handleExhaustedRetries.mockRejectedValue(
+      new Error('EntityNotFoundError: Could not find any entity of type PartImage'),
+    );
+    const job = makeJob({ attemptsMade: 3, opts: { attempts: 3 } });
+
+    await expect(processor.onFailed(job)).resolves.toBeUndefined();
+    expect(handleExhaustedRetries).toHaveBeenCalled();
+  });
 });
