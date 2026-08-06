@@ -10,14 +10,47 @@ Tracks completion against `docs/BUILD_PLAN.md`. Check boxes as each phase's acce
 - **`Finish & queue for sync` only required *one* photographed part in the whole draft.** Select seven parts, photograph one, and all seven queue — the six with no `PartImage` get created server-side and then sit at `pending_ai` forever, because an AI job is only ever enqueued per *image*. Exactly what happened to `KMHGN4JE1FU096946` (7 parts, 1 image). Now gated per-part, and the blocked state names which parts still need a photo instead of rendering a dead disabled button.
 - **Inventory was read-only.** Managers could only re-grade from the Review Queue, so anything already approved/listed/sold was frozen at the AI's answer. Rows now expand to show the part's photos + an editable grade, saving through the same `recordCorrection()` path so the Moat log is unchanged. Needed a new `GET /parts/:partId/images/:imageId/file` (manager/owner, tenant-scoped) since auth is Bearer-token and `<img src>` can't carry a header.
 
-**Also fixed this session (both were P0, see the backlog below):** queued drafts never syncing while already online, and the dev service-worker reload loop.
+**Also fixed this session (both were P0):** queued drafts never syncing while already online, and the dev service-worker reload loop. Plus two more found late, below.
+
+- **A failed AI job could kill the whole API process.** The backend died outright tonight on an unhandled `EntityNotFoundError`. Two defects lined up: `handleExhaustedRetries()` used `findOneOrFail` for the `PartImage` (which can legitimately be gone by the time retries are spent — its part or whole tenant deleted mid-flight), and `onFailed()` is a BullMQ worker event handler that BullMQ **never awaits**, so anything escaping it is an unhandled rejection and terminates the process on Node 15+. Fixed at both levels. **This is very likely the real story behind the long-standing "BullMQ/ioredis teardown flake"** that is currently `continue-on-error` in CI: a suite deletes its tenant in `afterAll` while one of its jobs is still retrying on the shared Redis queue, escalation throws, and the crash lands on whatever spec file happens to be running. The observed shape matches exactly — the error names `PartImage`, and it attaches to unrelated files. **Re-test that flake before assuming it's still unfixed.**
+- **Attendants can now reopen a previous vehicle and add photos** (new `/previous-vehicles` screens, reachable from a "Previous" button on the worker Home screen). See the section below for the API changes.
 
 **🔴 Found and NOT fixed:**
-1. **Six orphaned zero-photo parts** remain on `KMHGN4JE1FU096946` (Alternator, Bumper (Rear), Door (Driver Front), Fender (Left), Headlight (Right), + one more) from before the Finish fix. They can never be graded and no screen can delete them. Needs either a cleanup query or a "remove part" affordance.
+1. **Six orphaned zero-photo parts** remain on `KMHGN4JE1FU096946` (Alternator, Bumper (Rear), Door (Driver Front), Fender (Left), Headlight (Right), + one more) from before the Finish fix. They can never be graded and no screen can delete them. Needs either a cleanup query or a "remove part" affordance. **These are also what poisoned the Redis queue and crashed the API tonight** — stale jobs pointing at data that no longer exists.
 2. **The taxonomy has ~12 duplicate `Fender` rows** visible in the part picker — almost certainly `seed:taxonomy` run more than once without an upsert guard. Not investigated.
 3. **The camera does not work in this environment at all** (`Requested device not found`) — the `PhotoPicker` file-upload fallback is the only usable capture path here, and it works. Worth confirming real `getUserMedia` capture on an actual phone before trusting the camera path.
 
-**Not started:** AI multi-part scene detection (Gemini listing every part it can see across the exterior photos, surfaced for manager confirm/re-grade). Discussed and scoped with the user — AI suggests, human confirms — but no code written. No new API or key needed; Gemini is already wired and working.
+## Attendant "reopen a previous vehicle" (added 2026-08-05)
+
+A worker had no way to see a vehicle once its draft synced — Home only lists in-progress drafts. So a part the AI graded `C`/`obscured` because the photo was bad had no path back to a re-shoot from the yard floor. Scope was agreed with the user as: part photos **and** exterior photos, with every worker able to see every vehicle in their own yard.
+
+- `GET /vehicles` and `GET /vehicles/:id` are **no longer manager/owner-only**. RLS still confines results to the caller's tenant. `vehicles.e2e-spec.ts`'s old "rejects a worker" test was inverted deliberately, not deleted — read its comment before changing it back.
+- `GET /vehicles/:id` now also returns each part's `taxonomyName` and `photosCount`, plus the vehicle's `images`. The first two don't exist on the `Part` row, and without them the screen can't tell you which part needs re-shooting.
+- New `POST /vehicles/:id/images` (angle-validated against `VehicleImageAngle`) and `GET /vehicles/:id/images/:imageId/file`, both worker-accessible. Exterior photos are **not** AI-analyzed, so nothing is enqueued.
+- Part re-shoots needed no new endpoint — `POST /parts/:partId/images` was already open to any authenticated role.
+- **The mobile route is `/previous-vehicles`, deliberately not `/vehicles`.** Next route groups don't namespace URLs, so `(mobile)/vehicles` and `(desktop)/vehicles` both resolve to `/vehicles` and Turbopack fails the build with "two parallel pages that resolve to the same path". Confirmed by building it. Same collision class that made the worker Home screen unreachable for all of Phase 7.
+- **These uploads bypass the IndexedDB draft queue** and POST straight to the server, because the vehicle already exists server-side and there's no draft to attach them to. So unlike intake, **this screen requires a connection.** If offline support here is wanted, that's a real design change, not a tweak.
+
+## ▶ Start here next session (2026-08-06)
+
+**State:** 8 commits on branch `feat/intake-endpoint-and-inventory-editing`, working tree clean, **nothing pushed**. Backend 16 unit + all e2e green, frontend 176 tests green, both lint (0 errors) and `tsc --noEmit` clean, `next build` succeeds.
+
+**To resume:**
+```
+npm run db:up                 # Postgres + Redis (Docker Desktop must be running)
+npm run dev:backend           # -> http://localhost:3001
+npm run dev:frontend          # -> http://localhost:3000
+```
+Worker login: tenant `eab0ca24-451f-48e7-a4ae-8de8a680a115`, Demo Worker, PIN `1234`.
+Manager login: same tenant, `manager@demo-yard.local` / `manager-dev-password`.
+
+**Suggested order:**
+1. **Decide whether to push** these 8 commits / open a PR. Nothing is on `main` yet.
+2. **Re-run backend e2e and see if the flake is gone** now that the process-crash cause is fixed. If it is, drop `continue-on-error` from `backend` in `.github/workflows/ci.yml` — that's a real CI quality win and the TODO in that file can go.
+3. **Clean up the orphaned parts + duplicate `Fender` taxonomy rows** (P1 below). Small, and they're actively causing noise — the orphans are what crashed the API tonight.
+4. **AI multi-part scene detection** — the feature the user actually asked for and the only thing on the roadmap not yet started. Agreed shape: worker photographs the vehicle from all sides → Gemini returns *every* part it can identify (bumper, hood, what's visible underneath, etc.) → **AI suggests, human confirms** — the manager reviews and re-grades rather than parts being auto-created. No new API or key needed; Gemini is already wired, working, and billed. Needs: a new prompt returning an array of detections per image (the current `GRADING_PROMPT` returns one grade for one part), a mapping from free-text detections onto `part_taxonomies`, and a confirmation surface. Note the existing prompt/schema live in `backend/src/ai/gemini.service.ts` and `gemini-response.schema.ts`.
+
+**Unverified, worth a look first thing:** the `/previous-vehicles` **list** screen was confirmed live in a browser (renders all 4 vehicles with VINs and part counts), and the worker `GET /vehicles` call was confirmed via curl (HTTP 200). The **detail** screen — photo previews and the two add-photo paths — is covered by 10 frontend tests and 7 backend e2e tests but was **never clicked in a real browser**; the automation tooling went unresponsive before I could. Assume it works, but eyeball it before building on top of it.
 
 ## Consolidated backlog (as of 2026-08-05)
 
@@ -29,6 +62,7 @@ All 7 BUILD_PLAN phases are complete and the core pipeline is live-verified. Thi
 
 ### P1 — real gaps in what's built
 - **No way to remove a part from a draft.** A part is created the moment it's picked; there is still no delete affordance anywhere in the worker flow. The Finish gate now prevents *shipping* a zero-photo part, but a worker who picks the wrong part has to photograph it anyway to proceed.
+- **Reopening a vehicle requires a connection** (see the section above) — those uploads skip the offline draft queue by design. Fine for a yard with wifi; a real gap if attendants work dead zones.
 - **Six orphaned zero-photo parts** on `KMHGN4JE1FU096946` — pre-existing data, ungradeable, undeletable from any screen.
 - **~12 duplicate `Fender` taxonomy rows** — likely `seed:taxonomy` run repeatedly with no upsert guard. Affects every worker's part picker.
 - **Real-device camera never verified.** `getUserMedia` fails in every environment used so far (`Requested device not found`); only the `PhotoPicker` fallback has ever been exercised. Needs one pass on an actual phone.
