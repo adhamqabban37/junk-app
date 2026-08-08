@@ -5,12 +5,18 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import type { Queue } from 'bullmq';
 import { DataSource, FindOptionsWhere, In } from 'typeorm';
 import {
   AI_ANALYSIS_QUEUE,
   AiAnalysisJobData,
 } from '../ai/ai-analysis.processor';
+import {
+  AiAnalysis,
+  AiAnalysisStatus,
+  AiGrade,
+} from '../database/entities/ai-analysis.entity';
 import { Part, PartStatus } from '../database/entities/part.entity';
 import { PartImage } from '../database/entities/part-image.entity';
 import { PartTaxonomy } from '../database/entities/part-taxonomy.entity';
@@ -19,8 +25,11 @@ import {
   VehicleImageAngle,
 } from '../database/entities/vehicle-image.entity';
 import { CrushStatus, Vehicle } from '../database/entities/vehicle.entity';
+import { Tenant } from '../database/entities/tenant.entity';
 import { withTenantContext } from '../database/tenant-context';
 import { LocalFileStorage } from '../storage/local-file-storage';
+import { DetectPartsService } from '../ai/detect-parts.service';
+import { deriveRoster } from './vin-parts-roster';
 
 export interface VehicleListItem extends Vehicle {
   partsCount: number;
@@ -33,6 +42,60 @@ export interface VehicleListResult {
   pageSize: number;
 }
 
+/** What a delete actually destroyed, so the UI can report it rather than guess. */
+export interface VehicleDeletionSummary {
+  vehicleId: string;
+  vin: string;
+  deletedParts: number;
+  deletedPhotos: number;
+}
+
+/**
+ * A detection the scan could not file on its own. Never dropped: a
+ * detection the human cannot see is one they cannot correct, and the AI
+ * having spotted a grille the taxonomy can't place is still information.
+ */
+export interface UnresolvedDetection {
+  /** Exactly what the model called it. */
+  partName: string;
+  /** Populated when ambiguous (the model didn't say which side). */
+  candidateIds: string[];
+  reason: 'ambiguous' | 'unmapped';
+  grade: string;
+  confidence: number;
+  photoIndex: number;
+}
+
+export interface ScannedPhotoSummary {
+  index: number;
+  clarity: 'clear' | 'partial' | 'poor' | 'unknown';
+  note: string | null;
+  detections: number;
+  error?: string;
+}
+
+export interface VehicleScanSummary {
+  vehicleId: string;
+  /** New Part rows created by this scan. */
+  partsCreated: number;
+  /** Existing parts this scan added a photo (and possibly a grade) to. */
+  partsUpdated: number;
+  /** Parts left for a human because the AI wasn't confident enough to grade them. */
+  needsGrading: number;
+  photos: ScannedPhotoSummary[];
+  unresolved: UnresolvedDetection[];
+  roster: {
+    expected: string[];
+    /** Roster entries this vehicle now has a Part for. */
+    found: string[];
+    /** Roster entries still unaccounted for -- what's left to photograph. */
+    missing: string[];
+    approximate: boolean;
+    doors: number | null;
+    bodyClass: string | null;
+  };
+}
+
 interface IntakeDecodedInput {
   make?: string | null;
   model?: string | null;
@@ -41,10 +104,25 @@ interface IntakeDecodedInput {
   raw?: Record<string, unknown> | null;
 }
 
+/**
+ * A grade the client's bulk scan (POST /ai/detect-parts) already produced
+ * for one part in one photo. See the handling in intake() for why these are
+ * persisted rather than re-derived.
+ */
+interface IntakeDetectionInput {
+  photoId?: string;
+  grade?: string;
+  damageCodes?: string[];
+  confidence?: number;
+}
+
 interface IntakePartInput {
   id?: string;
   taxonomyId?: string;
+  detections?: IntakeDetectionInput[];
 }
+
+const VALID_GRADES = new Set<string>(Object.values(AiGrade));
 
 const EXTERIOR_PHOTO_FIELDNAME = /^exteriorPhoto:([^:]*):(.+)$/;
 
@@ -66,12 +144,24 @@ function parseJsonField<T>(
 
 @Injectable()
 export class VehiclesService {
+  /**
+   * Stamped on analyses persisted from a client-side bulk scan. Matches
+   * AiAnalysisService's own modelVersion so both grading paths are
+   * attributable to the same model, and so the (part_image_id,
+   * model_version) unique index treats them as the same generation.
+   */
+  private readonly detectionModelVersion: string;
+
   constructor(
     private readonly dataSource: DataSource,
     private readonly storage: LocalFileStorage,
+    private readonly detectParts: DetectPartsService,
     @InjectQueue(AI_ANALYSIS_QUEUE)
     private readonly aiQueue: Queue<AiAnalysisJobData>,
+    config: ConfigService,
   ) {
+    this.detectionModelVersion =
+      config.get<string>('GEMINI_MODEL') ?? 'gemini-flash-latest';
     // See PartsService's constructor for why this listener is required, not
     // just good hygiene: an unlistened 'error' event on an EventEmitter
     // crashes the process.
@@ -176,8 +266,21 @@ export class VehiclesService {
         );
 
         const partFilePrefix = `partPhoto:${partInput.id}:`;
+        const detectionsByPhotoId = new Map<string, IntakeDetectionInput>();
+        for (const detection of partInput.detections ?? []) {
+          if (
+            detection?.photoId &&
+            detection.grade &&
+            VALID_GRADES.has(detection.grade)
+          ) {
+            detectionsByPhotoId.set(detection.photoId, detection);
+          }
+        }
+        let hasPersistedAnalysis = false;
+
         for (const file of files) {
           if (!file.fieldname.startsWith(partFilePrefix)) continue;
+          const draftPhotoId = file.fieldname.slice(partFilePrefix.length);
 
           const partImageId = randomUUID();
           const relativePath = await this.storage.save(
@@ -194,6 +297,36 @@ export class VehiclesService {
             }),
           );
 
+          const detection = detectionsByPhotoId.get(draftPhotoId);
+          if (detection) {
+            // This photo was already graded per-part by the bulk scan.
+            // Re-running the single-part prompt on it would be worse than
+            // redundant: a scene photo holds many parts, and that prompt
+            // answers for exactly one, so every part sharing this photo
+            // would end up with the same arbitrary grade. Persist what the
+            // scan actually determined for THIS part instead.
+            await manager.getRepository(AiAnalysis).save(
+              manager.getRepository(AiAnalysis).create({
+                tenantId,
+                partId: part.id,
+                partImageId: partImage.id,
+                modelVersion: this.detectionModelVersion,
+                rawJson: {
+                  grade: detection.grade,
+                  damage_codes: detection.damageCodes ?? [],
+                  confidence: detection.confidence ?? null,
+                  source: 'scene-detection',
+                },
+                grade: detection.grade as AiGrade,
+                damageCodes: detection.damageCodes ?? [],
+                confidence: detection.confidence ?? null,
+                status: AiAnalysisStatus.COMPLETE,
+              }),
+            );
+            hasPersistedAnalysis = true;
+            continue;
+          }
+
           // Non-blocking per CLAUDE.md rule 4, same retry budget as
           // PartsService.addImage().
           await this.aiQueue.add(
@@ -201,6 +334,15 @@ export class VehiclesService {
             { tenantId, partImageId: partImage.id },
             { attempts: 3, backoff: { type: 'exponential', delay: 2000 } },
           );
+        }
+
+        // A part carrying a scan grade is reviewable immediately; without
+        // this it would sit at pending_ai forever, since no job was queued
+        // for it and nothing else ever moves it forward.
+        if (hasPersistedAnalysis) {
+          await manager
+            .getRepository(Part)
+            .update({ id: part.id }, { status: PartStatus.PENDING_REVIEW });
         }
       }
 
@@ -376,5 +518,344 @@ export class VehiclesService {
         })),
       };
     });
+  }
+
+  /**
+   * Runs multi-part AI detection over photos of a vehicle that already
+   * exists, and files the results as inventory.
+   *
+   * This is the manager-side counterpart to the worker's intake scan, and
+   * the reason it needs its own method rather than reusing
+   * POST /ai/detect-parts: that endpoint is deliberately stateless (during
+   * intake there is no Vehicle row to attach anything to), whereas here the
+   * vehicle, its VIN and its decode are all already in the database. That
+   * lets this path do two things the stateless one cannot:
+   *
+   *  1. Drive detection with the VIN-derived roster (vin-parts-roster.ts),
+   *     which pins the model's vocabulary to the taxonomy's own wording and
+   *     rules out parts the vehicle cannot have.
+   *  2. Persist automatically, so a manager uploads photos and gets graded
+   *     inventory without a per-detection confirmation step.
+   *
+   * Human-in-the-loop is preserved, just moved: nothing here is `approved`.
+   * Confident detections land at `pending_review` for the Review Queue, and
+   * only approval puts a part into an export.
+   *
+   * Grades come from the scan itself and are NEVER re-derived by queueing a
+   * grading job -- the single-part prompt answers for one part, so running
+   * it over a scene photo would stamp one arbitrary grade onto every part
+   * in it. Same reasoning, and the same handling, as intake().
+   */
+  async scan(
+    tenantId: string,
+    vehicleId: string,
+    files: { buffer: Buffer }[],
+    useExistingImages: boolean,
+  ): Promise<VehicleScanSummary> {
+    const tenant = await this.dataSource
+      .getRepository(Tenant)
+      .findOne({ where: { id: tenantId } });
+    const threshold = tenant?.settings?.aiConfidenceThreshold ?? 0.7;
+
+    const { vehicle, buffers } = await withTenantContext(
+      this.dataSource,
+      tenantId,
+      async (manager) => {
+        const found = await manager
+          .getRepository(Vehicle)
+          .findOne({ where: { id: vehicleId } });
+        if (!found) {
+          throw new NotFoundException('Vehicle not found');
+        }
+
+        if (!useExistingImages) {
+          return { vehicle: found, buffers: files.map((f) => f.buffer) };
+        }
+
+        // "Or old images": re-run detection over the walkaround photos
+        // already stored on this vehicle, with no upload at all. These were
+        // never AI-analysed -- exterior photos deliberately skip the queue
+        // -- so for most vehicles this is the first time anything has
+        // looked at them.
+        const images = await manager
+          .getRepository(VehicleImage)
+          .find({ where: { vehicleId }, order: { createdAt: 'ASC' } });
+        const loaded: Buffer[] = [];
+        for (const image of images) {
+          try {
+            loaded.push(await this.storage.read(image.url));
+          } catch {
+            // A row whose file is missing must not sink the whole scan.
+            continue;
+          }
+        }
+        return { vehicle: found, buffers: loaded };
+      },
+    );
+
+    if (buffers.length === 0) {
+      throw new BadRequestException(
+        useExistingImages
+          ? 'This vehicle has no stored photos to scan'
+          : 'No files uploaded',
+      );
+    }
+
+    const roster = deriveRoster(vehicle.decodedRaw);
+    // Detection runs OUTSIDE the transaction on purpose: it is 20-40s of
+    // Gemini calls, and holding a Postgres transaction open across it would
+    // pin a pooled connection for the whole time for no benefit.
+    const { images } = await this.detectParts.detect(
+      buffers.map((buffer) => ({ buffer })),
+      roster.expected,
+    );
+
+    return withTenantContext(this.dataSource, tenantId, async (manager) => {
+      const partRepo = manager.getRepository(Part);
+      const existingParts = await partRepo.find({ where: { vehicleId } });
+      // Keyed by taxonomy so a second scan, or a part added by hand, is
+      // reused rather than duplicated. Without this every re-scan would
+      // double the vehicle's inventory.
+      const partByTaxonomy = new Map(
+        existingParts.map((p) => [p.taxonomyId, p]),
+      );
+      // Snapshot of what was here BEFORE this scan. Needed because
+      // partByTaxonomy grows as the scan creates parts, so without it a part
+      // created from photo 1 and seen again in photo 2 would be counted as
+      // both "created" and "updated" -- a live run reported 22 created and
+      // 14 updated for a vehicle that only had 1 pre-existing part.
+      const preExistingPartIds = new Set(existingParts.map((p) => p.id));
+      const createdTaxonomyIds = new Set<string>();
+      const updatedPartIds = new Set<string>();
+      const needsGradingPartIds = new Set<string>();
+      // One photo can show a part twice; it must not be attached twice.
+      const attached = new Set<string>();
+      const unresolved: UnresolvedDetection[] = [];
+      const photos: ScannedPhotoSummary[] = [];
+
+      for (const image of images) {
+        photos.push({
+          index: image.index,
+          clarity: image.clarity ?? 'unknown',
+          note: image.clarityNote ?? null,
+          detections: image.detections.length,
+          ...(image.error ? { error: image.error } : {}),
+        });
+
+        for (const detection of image.detections) {
+          if (!detection.taxonomyId) {
+            // Ambiguous or unmapped. No taxonomy row means no Part can be
+            // created (taxonomy_id is NOT NULL), and guessing a side would
+            // put a wrong part number into inventory -- worse than an
+            // unresolved one. Surfaced for a person instead.
+            unresolved.push({
+              partName: detection.partName,
+              candidateIds: detection.candidateIds,
+              reason:
+                detection.candidateIds.length > 0 ? 'ambiguous' : 'unmapped',
+              grade: detection.grade,
+              confidence: detection.confidence,
+              photoIndex: image.index,
+            });
+            continue;
+          }
+
+          const confident = detection.confidence >= threshold;
+
+          let part = partByTaxonomy.get(detection.taxonomyId);
+          if (!part) {
+            part = await partRepo.save(
+              partRepo.create({
+                tenantId,
+                vehicleId,
+                taxonomyId: detection.taxonomyId,
+                status: confident
+                  ? PartStatus.PENDING_REVIEW
+                  : PartStatus.NEEDS_MANUAL_GRADING,
+              }),
+            );
+            partByTaxonomy.set(detection.taxonomyId, part);
+            createdTaxonomyIds.add(detection.taxonomyId);
+          } else if (preExistingPartIds.has(part.id)) {
+            updatedPartIds.add(part.id);
+          }
+
+          const attachKey = `${part.id}:${image.index}`;
+          if (attached.has(attachKey)) continue;
+          attached.add(attachKey);
+
+          const partImageId = randomUUID();
+          const relativePath = await this.storage.save(
+            `${tenantId}/${part.id}/${partImageId}.jpg`,
+            buffers[image.index],
+          );
+          const partImage = await manager.getRepository(PartImage).save(
+            manager.getRepository(PartImage).create({
+              id: partImageId,
+              tenantId,
+              partId: part.id,
+              url: relativePath,
+              qualityFlags: null,
+            }),
+          );
+
+          if (!confident) {
+            // Below the tenant's confidence threshold: the photo is filed
+            // against the right part, but no grade is written and nothing
+            // is queued. A person grades it, which is exactly the
+            // "if it's uncertain, leave it for a person" case.
+            needsGradingPartIds.add(part.id);
+            await partRepo.update(
+              { id: part.id },
+              { status: PartStatus.NEEDS_MANUAL_GRADING },
+            );
+            continue;
+          }
+
+          await manager.getRepository(AiAnalysis).save(
+            manager.getRepository(AiAnalysis).create({
+              tenantId,
+              partId: part.id,
+              partImageId: partImage.id,
+              modelVersion: this.detectionModelVersion,
+              rawJson: {
+                grade: detection.grade,
+                damage_codes: detection.damageCodes,
+                confidence: detection.confidence,
+                detected_as: detection.partName,
+                source: 'vehicle-scan',
+              },
+              grade: detection.grade as AiGrade,
+              damageCodes: detection.damageCodes,
+              confidence: detection.confidence,
+              status: AiAnalysisStatus.COMPLETE,
+            }),
+          );
+          // A part previously parked for manual grading that now has a
+          // confident grade becomes reviewable again.
+          await partRepo.update(
+            { id: part.id },
+            { status: PartStatus.PENDING_REVIEW },
+          );
+          needsGradingPartIds.delete(part.id);
+        }
+      }
+
+      const allParts = await partRepo.find({ where: { vehicleId } });
+      const taxonomyIds = [...new Set(allParts.map((p) => p.taxonomyId))];
+      const taxonomies = taxonomyIds.length
+        ? await manager
+            .getRepository(PartTaxonomy)
+            .findBy({ id: In(taxonomyIds) })
+        : [];
+      const heldNames = new Set(taxonomies.map((t) => t.name));
+
+      return {
+        vehicleId,
+        partsCreated: createdTaxonomyIds.size,
+        partsUpdated: updatedPartIds.size,
+        needsGrading: needsGradingPartIds.size,
+        photos,
+        unresolved,
+        roster: {
+          expected: roster.expected,
+          found: roster.expected.filter((name) => heldNames.has(name)),
+          missing: roster.expected.filter((name) => !heldNames.has(name)),
+          approximate: roster.approximate,
+          doors: roster.doors,
+          bodyClass: roster.bodyClass,
+        },
+      };
+    });
+  }
+
+  /**
+   * Hard-deletes a vehicle added by mistake, along with everything hanging
+   * off it. Manager/owner only -- see the controller.
+   *
+   * One SQL DELETE is enough: every child table cascades from `vehicles` at
+   * the DB level (InitialSchema migration) -- vehicle_images, and parts ->
+   * part_images -> ai_analyses -> human_corrections, plus embeddings,
+   * pricing_history and listings. Postgres runs referential actions
+   * internally, so the cascade is not itself filtered by RLS; the DELETE
+   * this issues *is*, which is what confines it to the caller's tenant.
+   *
+   * Two consequences worth being explicit about:
+   *  - **The Moat goes with it.** human_corrections cascades via
+   *    ai_analyses, so this destroys real training data (CLAUDE.md rule 6).
+   *    Accepted for a mistake-entry vehicle, whose corrections are noise,
+   *    but it is a genuine trade and there is no soft-delete today.
+   *  - **In-flight AI jobs are left pointing at deleted rows.** That is
+   *    safe: analyzePartImage throws EntityNotFoundError, the job burns its
+   *    retries, and handleExhaustedRetries findOne-s (not findOneOrFail) and
+   *    no-ops. This exact shape once killed the API process, so do not
+   *    "tidy" either of those back into a throw.
+   */
+  async remove(
+    tenantId: string,
+    vehicleId: string,
+  ): Promise<VehicleDeletionSummary> {
+    const { summary, storedPaths } = await withTenantContext(
+      this.dataSource,
+      tenantId,
+      async (manager) => {
+        const vehicle = await manager
+          .getRepository(Vehicle)
+          .findOne({ where: { id: vehicleId } });
+        if (!vehicle) {
+          throw new NotFoundException('Vehicle not found');
+        }
+
+        // Read the file paths before deleting the rows -- afterwards there
+        // is nothing left to tell us which files belonged to this vehicle.
+        // Sequential for the same reason as detail(): one shared client.
+        const parts = await manager
+          .getRepository(Part)
+          .find({ where: { vehicleId } });
+        const partIds = parts.map((p) => p.id);
+        const partImages = partIds.length
+          ? await manager
+              .getRepository(PartImage)
+              .find({ where: { partId: In(partIds) } })
+          : [];
+        const vehicleImages = await manager
+          .getRepository(VehicleImage)
+          .find({ where: { vehicleId } });
+
+        await manager.getRepository(Vehicle).delete({ id: vehicleId });
+
+        return {
+          summary: {
+            vehicleId,
+            vin: vehicle.vin,
+            deletedParts: parts.length,
+            deletedPhotos: partImages.length + vehicleImages.length,
+          },
+          storedPaths: [
+            ...partImages.map((i) => i.url),
+            ...vehicleImages.map((i) => i.url),
+          ],
+        };
+      },
+    );
+
+    // Deliberately after the transaction commits, never inside it: an
+    // unlink cannot be rolled back, so deleting files first would destroy
+    // photos belonging to a transaction that then failed. Best-effort in
+    // the other direction too -- an orphaned file is recoverable disk
+    // waste, whereas failing the request here would report "not deleted"
+    // for a vehicle that is already gone from the database.
+    for (const relativePath of storedPaths) {
+      try {
+        await this.storage.remove(relativePath);
+      } catch (error) {
+        console.error(
+          `[VehiclesService] failed to delete stored file ${relativePath}`,
+          error,
+        );
+      }
+    }
+
+    return summary;
   }
 }

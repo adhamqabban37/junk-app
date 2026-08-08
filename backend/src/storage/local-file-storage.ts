@@ -31,4 +31,22 @@ export class LocalFileStorage {
   async read(relativePath: string): Promise<Buffer> {
     return fs.readFile(path.join(this.root(), relativePath));
   }
+
+  /**
+   * Deletes a stored file. A file that is already gone is not an error:
+   * writes here and rows in Postgres are not in one transaction, so the two
+   * can legitimately disagree, and failing a vehicle deletion because one
+   * photo had already vanished from disk would leave the caller permanently
+   * unable to finish. Anything else (a permission problem, a bad path) still
+   * throws -- silently swallowing those would hide a real storage fault.
+   */
+  async remove(relativePath: string): Promise<void> {
+    try {
+      await fs.unlink(path.join(this.root(), relativePath));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw error;
+      }
+    }
+  }
 }

@@ -34,6 +34,28 @@ const TAXONOMY: Array<{
   { name: 'Wheel/Rim', category: 'Wheels & Tires' },
   { name: 'Seat (Driver)', category: 'Interior' },
   { name: 'Seat (Passenger)', category: 'Interior' },
+
+  // Added 2026-08-08 for full exterior coverage, left and right. Every one
+  // of these is a part the scene-detection prompt genuinely returns on real
+  // walkaround photos and which previously had nowhere to go -- it came
+  // back "unmapped" and could not be filed at all. Rear doors were the
+  // worst of them: the taxonomy had front doors only, so every 4-door
+  // vehicle had two doors that could not be recorded.
+  //
+  // Naming deliberately follows the existing split conventions rather than
+  // unifying them: Driver/Passenger for doors, Left/Right for panels and
+  // lighting. TaxonomyMatcher's SIDE_ALIASES already bridges the two.
+  { name: 'Door (Driver Rear)', category: 'Body' },
+  { name: 'Door (Passenger Rear)', category: 'Body' },
+  { name: 'Quarter Panel (Left)', category: 'Body' },
+  { name: 'Quarter Panel (Right)', category: 'Body' },
+  { name: 'Rocker Panel (Left)', category: 'Body' },
+  { name: 'Rocker Panel (Right)', category: 'Body' },
+  { name: 'Grille', category: 'Body' },
+  { name: 'Liftgate/Tailgate', category: 'Body' },
+  { name: 'Windshield', category: 'Glass' },
+  { name: 'Rear Window', category: 'Glass' },
+  { name: 'Sunroof', category: 'Glass' },
 ];
 
 export async function seedTaxonomy(): Promise<void> {

@@ -96,6 +96,94 @@ export async function fetchVehicleImageObjectUrl(
   return URL.createObjectURL(await res.blob());
 }
 
+export interface ScannedPhotoSummary {
+  index: number;
+  clarity: "clear" | "partial" | "poor" | "unknown";
+  note: string | null;
+  detections: number;
+  error?: string;
+}
+
+export interface UnresolvedDetection {
+  partName: string;
+  candidateIds: string[];
+  reason: "ambiguous" | "unmapped";
+  grade: string;
+  confidence: number;
+  photoIndex: number;
+}
+
+export interface VehicleScanSummary {
+  vehicleId: string;
+  partsCreated: number;
+  partsUpdated: number;
+  needsGrading: number;
+  photos: ScannedPhotoSummary[];
+  unresolved: UnresolvedDetection[];
+  roster: {
+    expected: string[];
+    found: string[];
+    missing: string[];
+    /** True when the VIN decode was incomplete, so `expected` is a floor. */
+    approximate: boolean;
+    doors: number | null;
+    bodyClass: string | null;
+  };
+}
+
+/**
+ * Runs multi-part AI detection over photos of this vehicle and files the
+ * results as graded inventory.
+ *
+ * Either pass `blobs` to scan new photos, or set `useExistingImages` to
+ * re-run over the walkaround photos already stored on the vehicle (those
+ * are never AI-analysed at upload time). Takes 20-40s for a typical
+ * walkaround -- callers must show progress.
+ */
+export function scanVehicle(
+  token: string,
+  vehicleId: string,
+  options: { blobs?: Blob[]; useExistingImages?: boolean },
+  fetchImpl?: typeof fetch,
+): Promise<VehicleScanSummary> {
+  const formData = new FormData();
+  if (options.useExistingImages) {
+    formData.append("useExistingImages", "true");
+  }
+  (options.blobs ?? []).forEach((blob, i) => {
+    formData.append("files", blob, `scan-${i}.jpg`);
+  });
+  return authFetch<VehicleScanSummary>(
+    `/vehicles/${vehicleId}/scan`,
+    { token, method: "POST", body: formData },
+    fetchImpl,
+  );
+}
+
+export interface VehicleDeletionSummary {
+  vehicleId: string;
+  vin: string;
+  deletedParts: number;
+  deletedPhotos: number;
+}
+
+/**
+ * Permanently deletes a vehicle added by mistake, plus its parts, photos,
+ * AI grades and the human corrections on them. Manager/owner only, and
+ * there is no undo -- callers must confirm first.
+ */
+export function deleteVehicle(
+  token: string,
+  vehicleId: string,
+  fetchImpl?: typeof fetch,
+): Promise<VehicleDeletionSummary> {
+  return authFetch<VehicleDeletionSummary>(
+    `/vehicles/${vehicleId}`,
+    { token, method: "DELETE" },
+    fetchImpl,
+  );
+}
+
 /** Adds another photo to a part that already exists server-side (re-shoot). */
 export function addPartImage(
   token: string,

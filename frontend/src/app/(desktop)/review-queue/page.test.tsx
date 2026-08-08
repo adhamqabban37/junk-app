@@ -15,10 +15,14 @@ vi.mock("@/lib/api/settings", () => ({
 vi.mock("@/lib/api/corrections", () => ({
   recordCorrection: vi.fn(),
 }));
+vi.mock("@/lib/api/vehicles", () => ({
+  deleteVehicle: vi.fn(),
+}));
 
 import { approvePart, listParts } from "@/lib/api/parts";
 import { getSettings } from "@/lib/api/settings";
 import { recordCorrection } from "@/lib/api/corrections";
+import { deleteVehicle } from "@/lib/api/vehicles";
 
 function makePart(overrides: Partial<PartListItem> = {}): PartListItem {
   return {
@@ -55,7 +59,133 @@ describe("ReviewQueuePage", () => {
     vi.mocked(approvePart).mockReset();
     vi.mocked(getSettings).mockReset();
     vi.mocked(recordCorrection).mockReset();
+    vi.mocked(deleteVehicle).mockReset();
     vi.mocked(getSettings).mockResolvedValue({ aiConfidenceThreshold: 0.7 });
+  });
+
+  describe("deleting a vehicle added by mistake", () => {
+    // Irreversible and much bigger than the row it's launched from, so it
+    // must not fire on one click.
+    it("asks for confirmation before deleting anything", async () => {
+      vi.mocked(listParts).mockResolvedValue(makeListResult([makePart()]));
+      const user = userEvent.setup();
+
+      render(<ReviewQueuePage />);
+      await user.click(await screen.findByRole("button", { name: /delete vehicle/i }));
+
+      expect(deleteVehicle).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: /delete permanently/i })).toBeInTheDocument();
+    });
+
+    // A manager should know the scope before confirming: this removes far
+    // more than the one part row they clicked from.
+    it("spells out what will be destroyed", async () => {
+      vi.mocked(listParts).mockResolvedValue(
+        makeListResult([
+          makePart({ id: "part-1" }),
+          makePart({ id: "part-2", taxonomyName: "Bumper" }),
+        ]),
+      );
+      const user = userEvent.setup();
+
+      render(<ReviewQueuePage />);
+      await user.click(
+        within(await screen.findByTestId("review-item-part-1")).getByRole("button", {
+          name: /delete vehicle/i,
+        }),
+      );
+
+      const warning = screen.getByTestId("delete-confirm-part-1");
+      expect(warning).toHaveTextContent(/VIN1234567890123/);
+      expect(warning).toHaveTextContent(/can.t be undone/i);
+      // Both queued parts belong to this same vehicle.
+      expect(warning).toHaveTextContent(/2 parts/i);
+    });
+
+    it("can be backed out of", async () => {
+      vi.mocked(listParts).mockResolvedValue(makeListResult([makePart()]));
+      const user = userEvent.setup();
+
+      render(<ReviewQueuePage />);
+      await user.click(await screen.findByRole("button", { name: /delete vehicle/i }));
+      await user.click(screen.getByRole("button", { name: /cancel/i }));
+
+      expect(screen.queryByTestId("delete-confirm-part-1")).not.toBeInTheDocument();
+      expect(deleteVehicle).not.toHaveBeenCalled();
+    });
+
+    // Every part of that vehicle has to leave the queue, not just the row
+    // the button was clicked on -- the others now reference a vehicle that
+    // no longer exists.
+    it("removes every queued part belonging to the deleted vehicle", async () => {
+      vi.mocked(listParts).mockResolvedValue(
+        makeListResult([
+          makePart({ id: "part-1" }),
+          makePart({ id: "part-2", taxonomyName: "Bumper" }),
+          makePart({
+            id: "part-3",
+            taxonomyName: "Fender",
+            vehicle: {
+              id: "v2",
+              vin: "OTHERVIN123456789",
+              make: "Toyota",
+              model: "Camry",
+              year: 2010,
+            },
+          }),
+        ]),
+      );
+      vi.mocked(deleteVehicle).mockResolvedValue({
+        vehicleId: "v1",
+        vin: "VIN1234567890123",
+        deletedParts: 2,
+        deletedPhotos: 3,
+      });
+      const user = userEvent.setup();
+
+      render(<ReviewQueuePage />);
+      await user.click(
+        within(await screen.findByTestId("review-item-part-1")).getByRole("button", {
+          name: /delete vehicle/i,
+        }),
+      );
+      await user.click(screen.getByRole("button", { name: /delete permanently/i }));
+
+      await waitFor(() => expect(deleteVehicle).toHaveBeenCalledWith("fake-token", "v1"));
+      await waitFor(() =>
+        expect(screen.queryByTestId("review-item-part-1")).not.toBeInTheDocument(),
+      );
+      expect(screen.queryByTestId("review-item-part-2")).not.toBeInTheDocument();
+      // The unrelated vehicle's part stays.
+      expect(screen.getByTestId("review-item-part-3")).toBeInTheDocument();
+    });
+
+    it("surfaces a failed delete instead of pretending it worked", async () => {
+      vi.mocked(listParts).mockResolvedValue(makeListResult([makePart()]));
+      vi.mocked(deleteVehicle).mockRejectedValue(new Error("boom"));
+      const user = userEvent.setup();
+
+      render(<ReviewQueuePage />);
+      await user.click(await screen.findByRole("button", { name: /delete vehicle/i }));
+      await user.click(screen.getByRole("button", { name: /delete permanently/i }));
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(/couldn.t delete/i);
+      // The row must still be there -- nothing was removed.
+      expect(screen.getByTestId("review-item-part-1")).toBeInTheDocument();
+    });
+
+    // Keyboard "a"/Enter approves the selected row. With a confirmation
+    // open, that shortcut must not fire underneath the dialog.
+    it("does not approve via the keyboard shortcut while confirming a delete", async () => {
+      vi.mocked(listParts).mockResolvedValue(makeListResult([makePart()]));
+      const user = userEvent.setup();
+
+      render(<ReviewQueuePage />);
+      await user.click(await screen.findByRole("button", { name: /delete vehicle/i }));
+      await user.keyboard("a");
+
+      expect(approvePart).not.toHaveBeenCalled();
+    });
   });
 
   it("shows a distinguishable error state, not the empty state, when the queue fails to load", async () => {

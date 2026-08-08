@@ -61,6 +61,16 @@ describe("VehiclesPage", () => {
     expect(within(row).getByText("4")).toBeInTheDocument();
   });
 
+  // Selecting a vehicle is how a manager reaches the screen that lets them
+  // add missing photos and get a part re-graded.
+  it("links each vehicle row to its detail screen", async () => {
+    vi.mocked(listVehicles).mockResolvedValue(makeResult([makeVehicle()]));
+    render(<VehiclesPage />);
+
+    await screen.findByText("1HGCM82633A123456");
+    expect(screen.getByTestId("vehicle-row-v1")).toHaveAttribute("href", "/vehicles/v1");
+  });
+
   it("filters by crush status", async () => {
     vi.mocked(listVehicles).mockResolvedValue(makeResult([makeVehicle()]));
     const user = userEvent.setup();

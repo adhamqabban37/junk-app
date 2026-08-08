@@ -6,6 +6,7 @@ import { useAuthSession } from "@/lib/auth-session";
 import { approvePart, listParts, type PartListItem } from "@/lib/api/parts";
 import { getSettings } from "@/lib/api/settings";
 import { recordCorrection } from "@/lib/api/corrections";
+import { deleteVehicle } from "@/lib/api/vehicles";
 
 const GRADES = ["A", "B", "C"] as const;
 
@@ -25,6 +26,12 @@ export default function ReviewQueuePage() {
   const [submittingId, setSubmittingId] = useState<string | null>(null);
   const [error, setError] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  // Which row has its "delete this vehicle" confirmation open. Keyed by
+  // part id (the row), though what gets deleted is that row's *vehicle*.
+  const [confirmingPartId, setConfirmingPartId] = useState<string | null>(null);
+  const [deletingVehicleId, setDeletingVehicleId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteNotice, setDeleteNotice] = useState<string | null>(null);
 
   useEffect(() => {
     if (!token) return;
@@ -56,6 +63,36 @@ export default function ReviewQueuePage() {
     }
   }
 
+  /**
+   * Deletes the whole vehicle behind this row -- "it was added by mistake".
+   * Irreversible: the server takes the vehicle's parts, photos, AI grades
+   * and the human corrections on them, so this is only ever reached through
+   * the confirmation panel below, never a single click.
+   */
+  async function handleDeleteVehicle(item: PartListItem) {
+    if (!token || !item.vehicle || deletingVehicleId) return;
+    const vehicleId = item.vehicle.id;
+    setDeletingVehicleId(vehicleId);
+    setDeleteError(null);
+    try {
+      const summary = await deleteVehicle(token, vehicleId);
+      // Drop every queued row for that vehicle, not just the one clicked --
+      // the others now point at a vehicle that no longer exists.
+      setItems((prev) => (prev ? prev.filter((p) => p.vehicle?.id !== vehicleId) : prev));
+      setConfirmingPartId(null);
+      setDeleteNotice(
+        `Deleted ${summary.vin} — ${summary.deletedParts} ${
+          summary.deletedParts === 1 ? "part" : "parts"
+        } and ${summary.deletedPhotos} ${summary.deletedPhotos === 1 ? "photo" : "photos"}.`,
+      );
+    } catch {
+      // Left open on purpose so the manager can retry without re-confirming.
+      setDeleteError("Couldn't delete that vehicle. It may still be there — try again.");
+    } finally {
+      setDeletingVehicleId(null);
+    }
+  }
+
   // Clamped rather than stored in state: items shrinking (an approve
   // removes one) shouldn't need an effect to "fix up" a stale index --
   // just derive a valid one at read time every render.
@@ -64,6 +101,10 @@ export default function ReviewQueuePage() {
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (!items || items.length === 0) return;
+      // A delete confirmation is open: "a"/Enter must not approve a part
+      // underneath it. Arrow keys are harmless, but moving the selection
+      // while a specific row awaits confirmation is just confusing.
+      if (confirmingPartId !== null) return;
       if (e.key === "ArrowDown") {
         e.preventDefault();
         setSelectedIndex(Math.min(clampedIndex + 1, items.length - 1));
@@ -78,7 +119,7 @@ export default function ReviewQueuePage() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- handleApprove closes over gradeOverrides/token/submittingId intentionally re-read fresh each render via the effect re-subscribing
-  }, [items, clampedIndex, gradeOverrides, token, submittingId]);
+  }, [items, clampedIndex, gradeOverrides, token, submittingId, confirmingPartId]);
 
   if (error) {
     return (
@@ -109,6 +150,24 @@ export default function ReviewQueuePage() {
   return (
     <div className="flex flex-col gap-6">
       <h1 className="text-2xl font-semibold">Review queue</h1>
+
+      {deleteError && (
+        <p
+          role="alert"
+          className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive"
+        >
+          {deleteError}
+        </p>
+      )}
+      {deleteNotice && (
+        <p
+          role="status"
+          className="rounded-xl border border-border bg-muted/40 p-4 text-sm text-muted-foreground"
+        >
+          {deleteNotice}
+        </p>
+      )}
+
       <div role="listbox" aria-label="Review queue" className="grid gap-3">
         {items.map((item, index) => {
           const flagged = needsReview(item, threshold);
@@ -181,8 +240,75 @@ export default function ReviewQueuePage() {
                   >
                     Approve
                   </Button>
+                  {item.vehicle && confirmingPartId !== item.id && (
+                    <Button
+                      variant="outline"
+                      className="text-destructive hover:text-destructive"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDeleteError(null);
+                        setDeleteNotice(null);
+                        setConfirmingPartId(item.id);
+                      }}
+                    >
+                      Delete vehicle
+                    </Button>
+                  )}
                 </div>
               </div>
+
+              {item.vehicle && confirmingPartId === item.id && (
+                <div
+                  data-testid={`delete-confirm-${item.id}`}
+                  className="mt-4 rounded-lg border border-destructive/30 bg-destructive/5 p-4"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <p className="text-sm font-medium text-destructive">
+                    Delete the whole vehicle {item.vehicle.vin}?
+                  </p>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    This removes the vehicle and everything on it — every part, photo and AI
+                    grade, including any not shown here, and the grade corrections recorded
+                    against them.{" "}
+                    {(() => {
+                      // Only what's in the queue can be counted client-side;
+                      // the vehicle may well have more parts than this, so
+                      // the wording must not imply otherwise.
+                      const queued = items.filter(
+                        (p) => p.vehicle?.id === item.vehicle!.id,
+                      ).length;
+                      return `${queued} ${queued === 1 ? "part" : "parts"} from it ${
+                        queued === 1 ? "is" : "are"
+                      } in this queue.`;
+                    })()}{" "}
+                    This can&apos;t be undone.
+                  </p>
+                  <div className="mt-3 flex items-center gap-2">
+                    <Button
+                      variant="destructive"
+                      disabled={deletingVehicleId === item.vehicle.id}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleDeleteVehicle(item);
+                      }}
+                    >
+                      {deletingVehicleId === item.vehicle.id
+                        ? "Deleting…"
+                        : "Delete permanently"}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setConfirmingPartId(null);
+                        setDeleteError(null);
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
             </div>
           );
         })}
