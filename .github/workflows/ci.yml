@@ -65,23 +65,40 @@ jobs:
 
       - run: npm run test:backend
 
-      # TODO(backend e2e flake): informational only, does not block the
-      # pipeline -- not weakened, just not gating. A pre-existing, documented
-      # flake (see docs/PROGRESS.md's Phase 4 "Test-infrastructure note" and
-      # the Post-Phase-7 CI notes): booting the full Nest app repeatedly in
-      # one Jest process occasionally hits a BullMQ/Redis teardown race
-      # ("Unhandled error: Connection is closed") -- test/setup-e2e.ts stops
-      # that race from crashing the whole Jest process, but under CI's
-      # shared/throttled CPU it still shows up as a real, near-deterministic
-      # ECONNRESET on the pooled-connection concurrent-tenant test
-      # (auth.e2e-spec.ts) and, sometimes, collateral test failures in
-      # whichever suite is running when it fires. Documented failure rate is
-      # ~1-in-8 runs locally; on GitHub's runners 3/3 retry attempts failed
-      # identically in the run that led to this being downgraded, so it's a
-      # real resource-contention issue, not something more retries fix.
-      # Next real lever: investigate Node HTTP keep-alive/timeout behavior
-      # (or DB_POOL_MAX=2 contention) under CPU throttling -- see
-      # auth.e2e-spec.ts's "rapid concurrent requests" test.
+      # TODO(backend e2e flake): still informational only, does not block the
+      # pipeline -- not weakened, just not gating. Status as of 2026-08-08,
+      # after measuring this properly for the first time (30 local runs):
+      #
+      # There are TWO independent failure modes here, which is why this
+      # looked unfixable for so long -- fixing either one alone still leaves
+      # the suite red a third of the time.
+      #
+      #  1. FIXED. The "Unhandled error: Connection is closed" teardown race,
+      #     root-caused and fixed in test/close-test-app.ts -- see
+      #     settleBullMqConnections()'s comment. It was never the cross-file
+      #     race it was diagnosed as: app.e2e-spec.ts reproduced it running
+      #     completely alone, 2 runs in 3. Measured: 4 occurrences in 9 runs
+      #     before the fix, 0 in 14 runs after.
+      #
+      #  2. NOT FIXED, and newly identified -- this is what still keeps the
+      #     step non-gating. A *native* crash that kills the Jest process
+      #     outright: Windows exit code -1073740791 (0xC0000409,
+      #     STATUS_STACK_BUFFER_OVERRUN), no test output, no JS stack. It is
+      #     NOT caused by the fix above -- it reproduces at a similar rate on
+      #     the original close-test-app.ts (2 in 9 runs original, 4 in 14
+      #     runs fixed; same order of magnitude either way). It has simply
+      #     never been written down before, because mode 1 was noisy enough
+      #     to hide it. NB: 0xC0000409 is a Windows status code -- whether
+      #     this same mode is what fails on GitHub's Linux runners (reported
+      #     there as an ECONNRESET on auth.e2e-spec.ts's pooled-connection
+      #     concurrent test) is UNKNOWN and unverified.
+      #
+      # So: do not re-gate this step on the strength of mode 1 being fixed.
+      # Next lever is mode 2 -- a native-layer crash during repeated
+      # app teardown, so suspect the native side (node-postgres/libpq socket
+      # teardown, or Node itself on Windows) rather than more JS-level
+      # BullMQ patching, and reproduce it on Linux before assuming CI shares
+      # the cause.
       - name: Run backend e2e (informational -- see TODO above)
         continue-on-error: true
         run: npm run test:e2e --workspace=backend

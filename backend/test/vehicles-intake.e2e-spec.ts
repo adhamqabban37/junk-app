@@ -31,7 +31,7 @@ import { closeTestApp } from './close-test-app';
  * field-name mismatch between the two sides would actually fail here.
  */
 async function waitFor(
-  predicate: () => Promise<boolean>,
+  predicate: () => boolean | Promise<boolean>,
   timeoutMs = 8000,
 ): Promise<void> {
   const start = Date.now();
@@ -51,6 +51,7 @@ describe('Vehicles intake (e2e)', () => {
   let tenant: Tenant;
   let worker: User;
   let taxonomy: PartTaxonomy;
+  let secondTaxonomy: PartTaxonomy;
   const WORKER_PIN = '4821';
 
   beforeAll(async () => {
@@ -93,6 +94,15 @@ describe('Vehicles intake (e2e)', () => {
         isQuickPick: false,
       }),
     );
+    // Needed by the bulk-scan test: two DIFFERENT parts have to come out of
+    // one shared scene photo for the per-part grading claim to mean anything.
+    secondTaxonomy = await taxonomyRepo.save(
+      taxonomyRepo.create({
+        name: 'Intake Test Hood',
+        category: 'Body',
+        isQuickPick: false,
+      }),
+    );
 
     worker = await withTenantContext(dataSource, tenant.id, (m) =>
       m.getRepository(User).save(
@@ -109,6 +119,9 @@ describe('Vehicles intake (e2e)', () => {
   afterAll(async () => {
     await dataSource.getRepository(Tenant).delete({ id: tenant.id });
     await dataSource.getRepository(PartTaxonomy).delete({ id: taxonomy.id });
+    await dataSource
+      .getRepository(PartTaxonomy)
+      .delete({ id: secondTaxonomy.id });
     await closeTestApp(app);
     await fs.rm(uploadDir, { recursive: true, force: true });
     delete process.env.UPLOAD_DIR;
@@ -250,6 +263,130 @@ describe('Vehicles intake (e2e)', () => {
       m.getRepository(Part).findOneOrFail({ where: { id: parts[0].id } }),
     );
     expect(updatedPart.status).toBe(PartStatus.PENDING_REVIEW);
+  }, 15000);
+
+  it('persists bulk-scan grades per part and does NOT re-grade the scene photo', async () => {
+    // The core correctness claim of the bulk-scan flow. One walkaround photo
+    // shows several parts, each already graded individually by
+    // POST /ai/detect-parts. Re-running the single-part grading prompt on
+    // that photo would answer for ONE part and stamp that same grade onto
+    // every part sharing the image -- so the queue must not be involved at
+    // all for photos that arrive with a detection.
+    fakeGemini.analyzePartImage.mockClear();
+
+    const token = await loginWorker();
+    const draftId = `draft-scan-${Date.now()}`;
+    const bumperPartId = `part-bumper-${Date.now()}`;
+    const hoodPartId = `part-hood-${Date.now()}`;
+    const scenePhotoId = 'scene-photo-1';
+
+    const res = await request(app.getHttpServer())
+      .post('/vehicles/intake')
+      .set('Authorization', `Bearer ${token}`)
+      .field('draftId', draftId)
+      .field('vin', 'SCANTESTVIN123456')
+      .field('vinEntryMethod', 'manual')
+      .field('decoded', JSON.stringify({ make: 'Hyundai', raw: {} }))
+      .field(
+        'parts',
+        JSON.stringify([
+          {
+            id: bumperPartId,
+            taxonomyId: taxonomy.id,
+            taxonomyName: taxonomy.name,
+            photoIds: [scenePhotoId],
+            detections: [
+              {
+                photoId: scenePhotoId,
+                grade: 'C',
+                damageCodes: ['crack', 'dent'],
+                confidence: 0.91,
+              },
+            ],
+          },
+          {
+            id: hoodPartId,
+            taxonomyId: secondTaxonomy.id,
+            taxonomyName: secondTaxonomy.name,
+            photoIds: [scenePhotoId],
+            detections: [
+              {
+                photoId: scenePhotoId,
+                grade: 'A',
+                damageCodes: [],
+                confidence: 0.97,
+              },
+            ],
+          },
+        ]),
+      )
+      // The same scene photo attached once per part, exactly as
+      // buildIntakeFormData() produces it.
+      .attach(
+        `partPhoto:${bumperPartId}:${scenePhotoId}`,
+        Buffer.from('fake-scene-jpeg'),
+        'scene.jpg',
+      )
+      .attach(
+        `partPhoto:${hoodPartId}:${scenePhotoId}`,
+        Buffer.from('fake-scene-jpeg'),
+        'scene.jpg',
+      )
+      .expect(201);
+
+    const vehicleId = (res.body as { vehicleId: string }).vehicleId;
+    const parts = await withTenantContext(dataSource, tenant.id, (m) =>
+      m.getRepository(Part).find({ where: { vehicleId } }),
+    );
+    expect(parts).toHaveLength(2);
+
+    const gradesByTaxonomy = new Map<string, AiAnalysis>();
+    for (const part of parts) {
+      const analysis = await withTenantContext(dataSource, tenant.id, (m) =>
+        m
+          .getRepository(AiAnalysis)
+          .findOneOrFail({ where: { partId: part.id } }),
+      );
+      gradesByTaxonomy.set(part.taxonomyId, analysis);
+    }
+
+    // Each part kept ITS OWN grade despite sharing one photo.
+    const bumperAnalysis = gradesByTaxonomy.get(taxonomy.id)!;
+    expect(bumperAnalysis.status).toBe(AiAnalysisStatus.COMPLETE);
+    expect(bumperAnalysis.grade).toBe('C');
+    expect(bumperAnalysis.damageCodes).toEqual(['crack', 'dent']);
+    expect(Number(bumperAnalysis.confidence)).toBeCloseTo(0.91, 2);
+
+    const hoodAnalysis = gradesByTaxonomy.get(secondTaxonomy.id)!;
+    expect(hoodAnalysis.grade).toBe('A');
+    expect(hoodAnalysis.damageCodes).toEqual([]);
+
+    // Both parts are immediately reviewable -- nothing left them at pending_ai.
+    for (const part of parts) {
+      const reloaded = await withTenantContext(dataSource, tenant.id, (m) =>
+        m.getRepository(Part).findOneOrFail({ where: { id: part.id } }),
+      );
+      expect(reloaded.status).toBe(PartStatus.PENDING_REVIEW);
+    }
+
+    // The whole point: no grading job ran for these photos.
+    expect(fakeGemini.analyzePartImage).not.toHaveBeenCalled();
+  }, 15000);
+
+  it('still grades normally when a part photo arrives without a detection', async () => {
+    // Mixed drafts are expected: a worker can bulk-scan and then hand-shoot
+    // an extra photo for the same vehicle. The hand-shot photo must still
+    // go through the queue.
+    fakeGemini.analyzePartImage.mockClear();
+
+    const token = await loginWorker();
+    const draftId = `draft-mixed-${Date.now()}`;
+    const partId = `part-mixed-${Date.now()}`;
+
+    await buildRequest(token, draftId, partId, 'MIXEDTESTVIN12345').expect(201);
+
+    await waitFor(() => fakeGemini.analyzePartImage.mock.calls.length > 0);
+    expect(fakeGemini.analyzePartImage).toHaveBeenCalled();
   }, 15000);
 
   it('is idempotent: retrying the same draftId returns the same vehicle instead of creating a duplicate', async () => {

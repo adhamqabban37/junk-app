@@ -1,16 +1,33 @@
 import { inspect } from 'node:util';
 
 /**
+ * BACKSTOP ONLY as of 2026-08-08. The race this was written for has since
+ * been fixed at its source in test/close-test-app.ts -- see
+ * settleBullMqConnections()'s comment for the actual mechanism, which is a
+ * race between BullMQ's RedisConnection *constructor* (which emits 'error'
+ * if the in-flight init() rejects) and its own close() (which strips every
+ * listener from that same emitter). It is NOT the cross-spec-file race the
+ * rest of this comment, and docs/PROGRESS.md before that date, described:
+ * app.e2e-spec.ts reproduced it running completely alone, 2 runs in 3.
+ *
+ * This handler is kept because it costs nothing and still covers the narrow
+ * window between close()'s removeAllListeners() and close() resolving. But
+ * it should no longer be load-bearing, and it never actually fixed anything
+ * locally: registering an 'uncaughtException' listener only suppresses
+ * Node's own crash-the-process default -- Node still invokes *every*
+ * listener, so Jest's own handler kept recording the error against whatever
+ * test was running and failing it regardless. That is exactly why the flake
+ * survived this file.
+ *
+ * Original description, kept for context:
  * Every e2e spec file boots a full Nest app (BullMQ Worker + Queue) in the
- * same Jest process (--runInBand). closeTestApp() already closes the Worker
- * gracefully before app.close() to avoid most teardown races (see its own
- * comment), but BullMQ's internal RedisConnection class -- a *separate*
- * EventEmitter from the Worker/Queue objects our own code listens on (see
- * node_modules/bullmq/dist/cjs/classes/redis-connection.js) -- can still
- * have its connect-time `initializing` promise reject after teardown, with
- * no listener left on that specific internal object. Node wraps a
- * zero-listener EventEmitter 'error' in its own ERR_UNHANDLED_ERROR (the
- * original error lands in `.context`, not `.message`) and throws it
+ * same Jest process (--runInBand). BullMQ's internal RedisConnection class
+ * -- a *separate* EventEmitter from the Worker/Queue objects our own code
+ * listens on (see node_modules/bullmq/dist/cjs/classes/redis-connection.js)
+ * -- can have its connect-time `initializing` promise reject after
+ * teardown, with no listener left on that specific internal object. Node
+ * wraps a zero-listener EventEmitter 'error' in its own ERR_UNHANDLED_ERROR
+ * (the original error lands in `.context`, not `.message`) and throws it
  * synchronously, which crashes the entire Jest process (not just the
  * current test) and takes down whichever spec happens to be running by
  * then -- confirmed via CI (GitHub Actions, Linux) hitting this
