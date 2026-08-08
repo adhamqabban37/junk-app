@@ -83,6 +83,51 @@ export async function loginPin(
   return body.accessToken;
 }
 
+export interface DetectedPartResponse {
+  /** Raw free text from the model, shown so the worker sees what it saw. */
+  partName: string;
+  /** Null when the model's wording is ambiguous or has no taxonomy row. */
+  taxonomyId: string | null;
+  taxonomyName: string | null;
+  /** Non-empty only when ambiguous -- the rows worth choosing between. */
+  candidateIds: string[];
+  grade: "A" | "B" | "C";
+  damageCodes: string[];
+  confidence: number;
+}
+
+export interface DetectedImageResponse {
+  index: number;
+  detections: DetectedPartResponse[];
+  error?: string;
+}
+
+/**
+ * Bulk scene detection: many photos in, every part the AI can identify in
+ * each one out, already graded.
+ *
+ * Requires a connection, unlike the rest of intake. The detection itself
+ * cannot happen on-device, and it has to happen before the worker can
+ * confirm anything -- so there is nothing useful to queue offline. What the
+ * worker CONFIRMS still lands in the IndexedDB draft and syncs through the
+ * normal offline path, so only this one step needs the network.
+ */
+export async function detectParts(
+  token: string,
+  files: Blob[],
+  fetchImpl: typeof fetch = fetch,
+): Promise<DetectedImageResponse[]> {
+  const form = new FormData();
+  files.forEach((file, i) => form.append("files", file, `scene-${i}.jpg`));
+  const res = await fetchImpl(`${apiBaseUrl()}/ai/detect-parts`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  const body = await parseJsonOrThrow<{ images: DetectedImageResponse[] }>(res);
+  return body.images;
+}
+
 export async function fetchTaxonomy(
   token: string,
   fetchImpl: typeof fetch = fetch,

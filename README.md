@@ -32,6 +32,18 @@ npm run dev:backend
 npm run dev:frontend
 ```
 
+### Testing on a phone (same network)
+
+The PWA calls the API from the *browser*, so it needs a reachable address — `localhost` on a phone means the phone. Create `frontend/.env.local` (gitignored) with this machine's LAN IP and restart the frontend:
+
+```
+NEXT_PUBLIC_API_BASE_URL=http://<your-lan-ip>:3001
+```
+
+Then open `http://<your-lan-ip>:3000` on the phone. On Windows you'll also need an inbound firewall rule for ports 3000/3001 (elevated shell). Verify the IP with `Get-NetAdapter` — a disconnected adapter can hold a stale lease that answers locally but not from the phone.
+
+**The live camera won't work over plain HTTP** (`getUserMedia` requires a secure context); the photo picker and bulk scan work fine. Real camera testing needs an HTTPS tunnel.
+
 Frontend: http://localhost:3000
 Backend: http://localhost:3001 (both dev servers run at once per step 6 above; the backend defaults to 3001 specifically so it doesn't collide with the frontend's 3000 — see `backend/src/main.ts` / `frontend/src/lib/api.ts`)
 

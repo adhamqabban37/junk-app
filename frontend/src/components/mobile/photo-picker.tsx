@@ -3,12 +3,33 @@
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 
-export interface PhotoPickerProps {
+interface PhotoPickerBaseProps {
   /** Unique id for the underlying file input -- required since multiple pickers can exist in the app (though never two at once on the same page today). */
   inputId: string;
   label: string;
-  onFileSelected: (file: File) => void;
 }
+
+interface SingleFilePickerProps extends PhotoPickerBaseProps {
+  onFileSelected: (file: File) => void;
+  multiple?: false;
+  onFilesSelected?: never;
+}
+
+interface MultiFilePickerProps extends PhotoPickerBaseProps {
+  multiple: true;
+  onFilesSelected: (files: File[]) => void;
+  onFileSelected?: never;
+}
+
+/**
+ * Single- and multi-select are separate prop shapes rather than one
+ * optional callback so a caller physically cannot ask for `multiple` and
+ * then read only the first file -- which is precisely the bug this
+ * component had: the picker silently discarded everything after files[0],
+ * so a worker selecting eight photos got one with no indication the other
+ * seven were dropped.
+ */
+export type PhotoPickerProps = SingleFilePickerProps | MultiFilePickerProps;
 
 /**
  * Alternative to live camera capture: pick an existing photo (native file
@@ -19,12 +40,18 @@ export interface PhotoPickerProps {
  * this sits alongside, and would narrow the picker's gallery option
  * unpredictably across platforms.
  */
-export function PhotoPicker({ inputId, label, onFileSelected }: PhotoPickerProps) {
+export function PhotoPicker(props: PhotoPickerProps) {
+  const { inputId, label } = props;
   const [dragOver, setDragOver] = useState(false);
 
-  function handleFiles(files: FileList | null) {
-    const file = files?.[0];
-    if (file) onFileSelected(file);
+  function handleFiles(fileList: FileList | null) {
+    const files = fileList ? Array.from(fileList) : [];
+    if (files.length === 0) return;
+    if (props.multiple) {
+      props.onFilesSelected(files);
+    } else {
+      props.onFileSelected(files[0]);
+    }
   }
 
   return (
@@ -51,11 +78,16 @@ export function PhotoPicker({ inputId, label, onFileSelected }: PhotoPickerProps
       >
         {label}
       </label>
-      <p className="text-xs text-muted-foreground">or drag and drop an image here</p>
+      <p className="text-xs text-muted-foreground">
+        {props.multiple
+          ? "or drag and drop images here"
+          : "or drag and drop an image here"}
+      </p>
       <input
         id={inputId}
         type="file"
         accept="image/*"
+        multiple={props.multiple === true}
         // Visually hidden but still focusable/keyboard-accessible (not
         // display:none) -- written out explicitly rather than relying on a
         // "sr-only" utility class, which this project's Tailwind v4 setup

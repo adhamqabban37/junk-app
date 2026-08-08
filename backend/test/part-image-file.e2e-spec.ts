@@ -28,6 +28,7 @@ describe('Part image file serving (e2e)', () => {
   let worker: User;
   let part: Part;
   let image: PartImage;
+  let taxonomy: PartTaxonomy;
   const MANAGER_PASSWORD = 'part-image-file-password';
   const WORKER_PIN = '6284';
 
@@ -51,7 +52,7 @@ describe('Part image file serving (e2e)', () => {
     );
 
     const taxonomyRepo = dataSource.getRepository(PartTaxonomy);
-    const taxonomy = await taxonomyRepo.save(
+    taxonomy = await taxonomyRepo.save(
       taxonomyRepo.create({
         name: 'Radiator',
         category: 'Cooling',
@@ -123,6 +124,10 @@ describe('Part image file serving (e2e)', () => {
 
   afterAll(async () => {
     await dataSource.getRepository(Tenant).delete({ id: tenant.id });
+    // Shared reference data -- no RLS, no cascade from Tenant. See the same
+    // note in analytics.e2e-spec.ts; this suite was leaking a 'Radiator'
+    // row per run, which collides by name with the real seeded one.
+    await dataSource.getRepository(PartTaxonomy).delete({ id: taxonomy.id });
     await closeTestApp(app);
     await fs.rm(uploadDir, { recursive: true, force: true });
     delete process.env.UPLOAD_DIR;

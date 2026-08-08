@@ -1,6 +1,13 @@
 import { create } from "zustand";
 import { deleteDraft, listDrafts, putDraft } from "./db";
-import type { DraftPhoto, PartDraft, VehicleDraft, VinEntryMethod } from "./types";
+import type { DetectionMergePlan } from "./detections";
+import type {
+  DraftPhoto,
+  PartDetectionResult,
+  PartDraft,
+  VehicleDraft,
+  VinEntryMethod,
+} from "./types";
 
 interface IntakeState {
   drafts: VehicleDraft[];
@@ -12,6 +19,7 @@ interface IntakeState {
   addExteriorPhoto: (draftId: string, photo: DraftPhoto) => Promise<void>;
   addPart: (draftId: string, part: PartDraft) => Promise<void>;
   addPartPhoto: (draftId: string, partId: string, photo: DraftPhoto) => Promise<void>;
+  applyDetectionPlan: (draftId: string, plan: DetectionMergePlan) => Promise<void>;
   queueForSync: (draftId: string) => Promise<void>;
   markSyncing: (draftId: string) => Promise<void>;
   markSynced: (draftId: string) => Promise<void>;
@@ -97,6 +105,41 @@ export const useIntakeStore = create<IntakeState>((set, get) => {
         p.id === partId ? { ...p, photos: [...p.photos, photo] } : p,
       );
       await persist({ ...draft, parts });
+    },
+
+    /**
+     * Applies a whole bulk-detection confirmation in ONE write.
+     *
+     * Doing it as a loop of addPart/addPartPhoto instead would persist the
+     * entire draft -- photo blobs and all -- once per accepted detection,
+     * and a confirmation of 20+ parts is completely normal here. It would
+     * also leave the draft half-updated if the app were killed midway.
+     */
+    applyDetectionPlan: async (draftId, plan) => {
+      const draft = findDraftOrThrow(get().drafts, draftId);
+      const additions = new Map<
+        string,
+        { photos: DraftPhoto[]; detections: PartDetectionResult[] }
+      >();
+      for (const { partId, photo, detection } of plan.photosForExistingParts) {
+        const entry = additions.get(partId) ?? { photos: [], detections: [] };
+        entry.photos.push(photo);
+        entry.detections.push(detection);
+        additions.set(partId, entry);
+      }
+      const parts = draft.parts.map((part) => {
+        const extra = additions.get(part.id);
+        if (!extra) return part;
+        return {
+          ...part,
+          photos: [...part.photos, ...extra.photos],
+          // A hand-added part can now carry scan grades for the photos the
+          // scan contributed, while its own hand-shot photos stay
+          // detection-free and get graded server-side as usual.
+          detections: [...(part.detections ?? []), ...extra.detections],
+        };
+      });
+      await persist({ ...draft, parts: [...parts, ...plan.newParts] });
     },
 
     queueForSync: async (draftId) => {

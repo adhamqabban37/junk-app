@@ -72,7 +72,9 @@ describe('AiAnalysisProcessor', () => {
     // This really happened: a job whose PartImage had been deleted mid-flight
     // took the dev server down.
     handleExhaustedRetries.mockRejectedValue(
-      new Error('EntityNotFoundError: Could not find any entity of type PartImage'),
+      new Error(
+        'EntityNotFoundError: Could not find any entity of type PartImage',
+      ),
     );
     const job = makeJob({ attemptsMade: 3, opts: { attempts: 3 } });
 

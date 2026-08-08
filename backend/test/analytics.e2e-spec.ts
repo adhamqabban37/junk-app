@@ -27,6 +27,7 @@ describe('Analytics (e2e)', () => {
   let otherTenant: Tenant;
   let manager: User;
   let worker: User;
+  let taxonomy: PartTaxonomy;
   const MANAGER_PASSWORD = 'analytics-test-password';
   const WORKER_PIN = '2468';
 
@@ -48,7 +49,7 @@ describe('Analytics (e2e)', () => {
     );
 
     const taxonomyRepo = dataSource.getRepository(PartTaxonomy);
-    const taxonomy = await taxonomyRepo.save(
+    taxonomy = await taxonomyRepo.save(
       taxonomyRepo.create({
         name: 'Fender',
         category: 'Body',
@@ -164,6 +165,11 @@ describe('Analytics (e2e)', () => {
   afterAll(async () => {
     await dataSource.getRepository(Tenant).delete({ id: tenant.id });
     await dataSource.getRepository(Tenant).delete({ id: otherTenant.id });
+    // part_taxonomies is shared reference data with no RLS and no cascade
+    // from Tenant, so deleting the tenant above does NOT reclaim this row.
+    // Without this, every run leaks one more 'Fender' into the dev database
+    // and pollutes the real part picker (12 had accumulated by 2026-08-06).
+    await dataSource.getRepository(PartTaxonomy).delete({ id: taxonomy.id });
     await closeTestApp(app);
   });
 

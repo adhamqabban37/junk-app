@@ -94,6 +94,17 @@ export default function PartsPageClient({ draftId }: { draftId: string }) {
     <div className="flex flex-1 flex-col gap-6 p-6">
       <h1 className="text-xl font-semibold">Select parts</h1>
 
+      {/* Second entry point alongside picking parts by hand, not a
+          replacement for it: the part-first flow below works offline, this
+          one needs a connection to reach the AI. */}
+      <Button
+        variant="secondary"
+        className="w-full"
+        onClick={() => router.push(`/intake/${draftId}/scan`)}
+      >
+        Scan parts from photos
+      </Button>
+
       {draft.parts.length > 0 && (
         <div className="space-y-2">
           <h2 className="text-sm font-medium">Added</h2>

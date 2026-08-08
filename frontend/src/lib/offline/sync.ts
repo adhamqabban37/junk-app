@@ -19,6 +19,12 @@ function buildIntakeFormData(draft: VehicleDraft): FormData {
         taxonomyId: p.taxonomyId,
         taxonomyName: p.taxonomyName,
         photoIds: p.photos.map((photo) => photo.id),
+        // Grades the bulk scan already produced. The server persists these
+        // rather than re-grading the photo, because a scene photo re-graded
+        // with the single-part prompt would stamp one arbitrary grade onto
+        // every part in it. Absent for hand-shot photos, which still get
+        // graded server-side.
+        detections: p.detections ?? [],
       })),
     ),
   );
