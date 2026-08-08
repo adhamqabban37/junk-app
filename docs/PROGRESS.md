@@ -2,6 +2,186 @@
 
 Tracks completion against `docs/BUILD_PLAN.md`. Check boxes as each phase's acceptance criteria are verified.
 
+## 2026-08-08 (later) — VIN-driven AI part recognition on the manager screen
+
+**The complaint:** *"I'm on the manager dash, I see the vehicle, I see the VIN and the photos, but when I upload new photos the AI is not able to recognize it."* Correct, and it was by design, for two separate reasons:
+
+1. **Exterior vehicle photos are never AI-analysed.** `VehiclesController.addImage()` deliberately enqueues nothing. A walkaround photo uploaded there was stored as reference and nothing else.
+2. **Part photos use the single-part prompt**, which grades *one already-named part*. It has no concept of finding parts in a photo.
+
+The multi-part capability existed (`POST /ai/detect-parts`) but was wired only into the mobile intake scan, and is deliberately stateless — during intake there is no `Vehicle` row to attach anything to.
+
+### What shipped: `POST /vehicles/:id/scan`
+
+Manager/owner only. Takes uploaded photos **or** `useExistingImages=true` to re-run over the walkaround photos already on the vehicle (your "old images" case — those have never been looked at by anything). Fully automatic per the user's decision: no per-detection ticking. The human gate stays where it already was — parts land `pending_review` and only approval lets them export.
+
+**The VIN actually drives it.** `Vehicle.decodedRaw` already stores all **140** NHTSA variables (confirmed live), including `Body Class` and `Doors`. New `backend/src/vehicles/vin-parts-roster.ts` (+23 specs) expands those into the exterior parts the vehicle should have — a 4-door sedan gets two rear doors and a trunk lid; a coupe gets neither. That roster is then:
+- **fed into the Gemini prompt**, pinning the model's vocabulary to the taxonomy's own wording, and
+- **used to constrain taxonomy matching**, so a coupe can't produce a "rear door".
+
+> **Say this plainly to anyone who asks:** the roster is a body-style heuristic, **not fitment data**. A VIN carries no parts catalogue. Real fitment is ACES/Hollander — licensed, out of MVP scope. Anything the decode can't determine is left *out* of the expected list rather than guessed, because a checklist listing parts the vehicle never had can never be completed.
+
+### Live result on the real Genesis (`KMHGN4JE1FU096946`)
+Scanned the 4 stored walkaround photos, **17 seconds, 38 detections, 22 parts created, 0 unresolved, 0 needing manual grading**. Roster: 24 expected, **23 found**, only `Quarter Panel (Right)` missing (no photo covers it).
+
+Independent corroboration that the grading is real: `Bumper (Front)` came back **B / misaligned / 0.92** — the same verdict as the 2026-08-05 single-part run (B/85%/misalignment) and the 2026-08-06 bulk scan (B/misaligned+scuff). Three different prompts, three different photo sets, same answer.
+
+Before this change every one of rear doors, grille, windshield, quarter panels and rocker panels came back **unmapped** and could not be filed at all.
+
+### Uncertainty handling (the user's explicit ask)
+- **Below the tenant's confidence threshold** → the part and photo are still filed, but **no grade is written** and it goes to `needs_manual_grading`. A person grades it.
+- **Ambiguous** ("fender", no side) or **unmapped** → **no Part is created** (`taxonomy_id` is NOT NULL, and guessing a side files a wrong part number). Returned in `unresolved[]` with the AI's own wording so the manager can see what it saw. Never silently dropped.
+- **Unclear photo** → new optional `image_quality {clarity, note}` on the scene schema. The prompt now says explicitly that a poor photo is *not* a reason to return nothing. The UI shows "Photo 3: Hard to read (blurry and backlit) — 2 parts found". Optional in the schema so a model that omits it doesn't fail the whole response.
+
+### Taxonomy: full exterior coverage
+Added 11 rows (`taxonomy.seed.ts`, upsert-guarded): rear doors L/R, quarter panels L/R, rocker panels L/R, grille, liftgate/tailgate, windshield, rear window, sunroof. `TaxonomyMatcher` gained the phrase synonyms to reach them (windscreen, back glass, sill panel, moonroof, hatch…), +19 specs.
+
+**Two matcher behaviours legitimately changed** and their tests were updated, not deleted:
+- `"left rear door"` now **resolves** instead of being unmapped — that was the old regression test's example, so the "side contradicts every candidate" rule is now pinned with seats instead.
+- `"left door"` is now **ambiguous** (front vs rear) where it used to resolve to the front door. Surfacing that beats silently picking one.
+- `"back light"` is deliberately left **unmapped**: it's real glass-trade usage for the rear window, but casually it often means a taillight, and filing a lamp as glass is the exact wrong-part-number failure this matcher exists to prevent.
+
+### New/changed files
+- `backend/src/vehicles/vin-parts-roster.ts` (+ spec, 23) — the roster.
+- `backend/src/vehicles/vehicles.{service,controller}.ts` — `scan()` + endpoint.
+- `backend/src/ai/gemini.service.ts` — roster-aware prompt, `image_quality`.
+- `backend/src/ai/gemini-response.schema.ts`, `detect-parts.service.ts` — clarity plumbing, roster-constrained matching.
+- `backend/src/database/seeds/taxonomy.seed.ts`, `src/ai/taxonomy-matcher.ts` (+ spec).
+- `backend/test/vehicle-scan.e2e-spec.ts` (+10).
+- `frontend/src/app/(desktop)/vehicles/[vehicleId]/` — scan panel, clarity warnings, unresolved list, roster checklist (+6 specs).
+
+### Two bugs found by testing, not by review
+- **A scan request with no multipart body at all 500'd** instead of 400 — `@Body()` is genuinely `undefined` there, and reading through it threw. Same class as the known "invalid taxonomyId returns 500" item.
+- **`partsUpdated` was double-counting.** It counted parts the *same scan* had created and then re-encountered in a later photo — the live run reported "22 created, 14 updated" for a vehicle with 1 pre-existing part. Now snapshots the pre-existing part ids.
+
+### Export
+Unchanged. `GET /parts/export.csv` already emits grade/damage/confidence for `approved`+`listed` parts, so scanned parts flow in once approved. (Its `price` column is still a hardcoded empty placeholder.)
+
+### Verification
+Backend **101 unit** (was 61) + **94 e2e / 18 suites** (was 77/16), `tsc` clean, eslint 0 errors. Frontend **215 tests** (was 193), `tsc` clean, 0 lint errors, `next build` clean with `/vehicles/[vehicleId]` present.
+
+### Still open
+- **Nobody has clicked the scan UI in a browser** (browser work was off-limits this session). The endpoint is live-verified; the screen is not.
+- **Cost is still un-analysed.** One Gemini call per photo, and re-scanning re-bills. 12-image cap is the only guard.
+- A photo that yields *only* unresolved detections isn't stored anywhere, so it must be re-uploaded to retry.
+
+## 2026-08-08 — the e2e "flake" was two bugs; one is fixed, one is newly identified
+
+Picked up "Start here" item 2 (settle the flake question). It is settled, but not the way the item assumed — and the previous session was right to refuse to declare it fixed on one clean run.
+
+**Measured it instead of guessing: 30 full-suite runs.** The single most useful finding is that there are **two independent failure modes**, which is why this has looked unfixable for months. Fixing either one alone still leaves the suite red about a third of the time, so every previous attempt looked like it had "not worked".
+
+| | runs | clean | mode 1 (test failure) | mode 2 (native crash) |
+|---|---|---|---|---|
+| Before fix | 9 | 3 | **4** | 2 |
+| After fix | 14 | 10 | **0** | 4 |
+
+### Mode 1 — FIXED, and the standing diagnosis was wrong
+**It was never a cross-file race.** `app.e2e-spec.ts` reproduces it running completely alone, 2 runs in 3. Every doc and code comment in the repo described it as a cross-file teardown race where unrelated suites took collateral damage — that framing is what made it look untestable in isolation, so nobody had tried.
+
+Real mechanism, in BullMQ's vendor code:
+- `redis-connection.js:86-87` — the constructor does `this.initializing = this.init()` then `this.initializing.catch(err => this.emit('error', err))`.
+- `redis-connection.js:429,452` — `close()` disconnects the client (which is what makes an *in-flight* `init()` reject with `Connection is closed.`) and then, in its `finally`, calls `this.removeAllListeners()`.
+
+If `init()` is still pending when teardown starts, the constructor's catch callback races `removeAllListeners()`. Lose the race and the `emit('error')` has zero listeners, so Node wraps it in `ERR_UNHANDLED_ERROR` and throws. BullMQ guards the *sibling* case — `close()` attaches its own `initializing?.catch(() => {})` at :432 so it isn't an unhandled *rejection* — but that does nothing about the constructor's separate handler emitting on a by-then-listenerless emitter.
+
+This also explains the signature exactly: `app.e2e-spec.ts` is the one suite that does essentially nothing between `app.init()` and teardown (a single `GET /health`), so its connections are the likeliest to still be initializing. Busier suites give `init()` time to settle on its own — which is precisely why it presented as "unrelated files failing".
+
+**Fix** (`backend/test/close-test-app.ts`): force `init()` to settle *before* `close()` can strip the listeners, by awaiting it while BullMQ's own `forwardConnectionError()` listener is still attached. `RedisConnection.get client()` returns that exact `initializing` promise, so awaiting `worker.client`, `worker.blockingConnection.client` and the registered Queue's `client` is awaiting init. `allSettled`, so a genuinely failed connection still reaches teardown.
+
+**Also worth knowing:** `test/setup-e2e.ts`'s `uncaughtException` handler never actually fixed anything locally. Registering that listener only suppresses Node's *crash-the-process* default — Node still invokes every listener, so Jest's own handler kept recording the error against whatever test was running and failing it anyway. It's kept as a cheap backstop, but it is no longer load-bearing and its comment has been corrected.
+
+### Mode 2 — NOT fixed, and it had never been written down
+A **native** crash that kills the Jest process outright: Windows exit code `-1073740791` (`0xC0000409`, `STATUS_STACK_BUFFER_OVERRUN`), no test output, no JS stack.
+
+**It is not caused by the mode-1 fix** — verified by reverting `close-test-app.ts` to its original and re-running the identical loop: 2 crashes in 9 runs original, 4 in 14 fixed. Same order of magnitude either way. Mode 1 was simply noisy enough to hide it.
+
+Note the pre-existing comment in `close-test-app.ts` already recorded this exact exit code from an earlier *force*-close experiment. We are not force-closing, so a graceful close reaches the same native failure — that comment's conclusion ("graceful close avoids it") is incomplete.
+
+**Left open deliberately.** It's a native-layer crash during repeated app teardown, so the suspects are the native side (node-postgres/libpq socket teardown, or Node itself on Windows), not more JS-level BullMQ patching. `0xC0000409` is a Windows status code; whether this is also what fails on GitHub's Linux runners (reported there as an `ECONNRESET` on `auth.e2e-spec.ts`) is **unknown and unverified** — worth reproducing on Linux before assuming a shared cause.
+
+### CI unchanged, on purpose
+`continue-on-error` on the backend e2e job **stays**. The previous session's instruction was to drop it "if it holds" — it doesn't hold, so re-gating would break the pipeline roughly one run in three. The `ci.yml` TODO now describes both modes and says explicitly not to re-gate on mode 1 alone.
+
+### Also fixed
+`backend/test/vehicles-intake.e2e-spec.ts:388` failed `tsc --noEmit` (`waitFor` was typed `() => Promise<boolean>` but passed a sync predicate). Runtime was fine — `await` on a boolean works — so tests passed while the typecheck was red. Signature widened to `() => boolean | Promise<boolean>`. The previous session recorded `tsc` as clean, so this crept in after that check.
+
+### Also built this session: managers can open a vehicle and add missing photos
+
+User request: *"from the manager dashboard I want to be able to select the vehicle that is there and add more photos to it so it can be graded again if there are missing photos."*
+
+**No backend changes were needed** — every endpoint was already open to managers, which was worth checking before writing any:
+- `GET /vehicles`, `GET /vehicles/:id`, `POST /vehicles/:id/images`, `POST /parts/:partId/images` — all open to any authenticated role.
+- `GET /parts/:partId/images/:imageId/file` is manager/owner-only, which is fine here.
+
+Verified live rather than assumed: posting to both upload endpoints with a real manager token returns **400** (missing file), not 403 — so the role genuinely passes the guards.
+
+**"Graded again" needs no new endpoint.** `PartsService.addImage()` already enqueues an AI job per uploaded image, and `AiAnalysisService.analyzePartImage()` sets `Part.status = PENDING_REVIEW` on success. So adding a photo re-grades the part and returns it to the Review Queue — **including a part that was already approved**. That is a real side effect, so the screen says so in plain text rather than letting a manager discover it.
+
+**New/changed files**
+- `frontend/src/app/(desktop)/vehicles/[vehicleId]/` — page wrapper + client screen (+9 tests).
+- `frontend/src/app/(desktop)/vehicles/page.tsx` — rows are now `next/link`s to the detail screen (+1 test).
+
+**Deliberately a separate screen from the worker's `/previous-vehicles/[vehicleId]`**, not a shared one, even though they call the same three APIs: the worker is at the car deciding what to re-shoot, the manager is at a desk finding which parts are stuck ungradeable. The manager screen adds a **missing-photos summary banner** and a per-row `No photos` badge, which is the "if there are missing photos" half of the request. `PhotoPicker`/`VehiclePhoto` are reused from `components/mobile/` rather than duplicated (worth relocating if a third caller appears).
+
+**Route collision checked, not assumed** — `next build` emits `/vehicles/[vehicleId]` and `/previous-vehicles/[vehicleId]` side by side. This is the trap that has bitten the project twice.
+
+**This also gives the six orphaned parts a way out.** Queried live: vehicle `d86c6467…` (VIN `KMHGN4JE1FU096946`, 2015 Hyundai Genesis) has exactly the 6 documented zero-photo parts — Bumper (Front), Door (Driver Front), Bumper (Rear), Alternator, Fender (Left), Headlight (Right), all `pending_ai` with 0 photos — plus Headlight (Left) at `pending_review` with 1. The new screen surfaces all six under "6 parts have no photo and can't be graded" and each now has an Add photo button that will grade it. **Still no way to *delete* a part** — that P1 is untouched.
+
+**Not clicked in a browser** (user asked to skip browser work), so per this project's own track record, assume something is wrong with it until someone uses it.
+
+### Verification
+Backend **61 unit** + **77 e2e / 16 suites**, `tsc --noEmit` clean, eslint 0 errors (103 pre-existing warnings). Frontend **203 tests / 37 files** (was 193/36), `tsc --noEmit` clean, eslint 0 errors (1 pre-existing warning in `inventory/page.tsx`), `next build` succeeds with `/intake/[draftId]/scan` and `/vehicles/[vehicleId]` both present and no route collision.
+
+**Not done this session:** the bulk-scan UI still has not been clicked in a browser (user asked to skip browser work). That remains item 1.
+
+## 2026-08-06 — bulk photo scan: AI multi-part detection shipped
+
+**The last unbuilt roadmap item is done.** A worker can now select many photos at once, and Gemini identifies *every* part it can see in each one, grades each individually, and the worker confirms before anything becomes inventory. This was the feature the user actually asked for; the trigger was them hitting the old limit directly — "I'm not allowed to add bulk images, only one by one."
+
+**Why it was one-at-a-time, precisely** (all three had to change):
+1. `photo-picker.tsx` took `files?.[0]` and had no `multiple` attribute — selecting eight photos silently kept one.
+2. The flow was **part-first**: picking a taxonomy row created the `Part`, *then* routed to that part's camera. A photo could not exist before a part was named.
+3. `GRADING_PROMPT` returned one grade for a part you had already named. It had no concept of identifying anything.
+
+### Shape that was built (decisions confirmed with the user, not assumed)
+- **Worker confirms on the phone**, right after upload — they're standing at the vehicle and can look. (Note this supersedes the earlier note at the bottom of this file that said the *manager* would confirm.)
+- **Sits alongside** the part-first flow, which is untouched and still the offline-capable path.
+- **Many parts per photo** — a front-end walkaround shot yields hood + bumper + both headlights + wheel.
+
+### Architecture: why detection is a stateless endpoint
+During intake the vehicle exists **only as an IndexedDB draft on the phone** — `POST /vehicles/intake` is what creates the `Vehicle` row, at sync time. So detection cannot hang off a `vehicleId`. `POST /ai/detect-parts` therefore **writes nothing**: N images in, detections out. What the worker confirms is written into the draft as ordinary `PartDraft` entries, so the entire existing sync + review path works unchanged. Only the detection call itself needs a network.
+
+### New/changed files
+- `backend/src/ai/gemini.service.ts` — added `detectPartsInImage()` + `SCENE_DETECTION_PROMPT`. The shared request path was extracted into `generateJson(prompt, buffer, mime, schema)`; `analyzePartImage()` is behaviourally identical (its 7 specs pass untouched).
+- `backend/src/ai/gemini-response.schema.ts` — `GeminiSceneDetectionSchema`. `part_name` is deliberately a free-text `string`, **not an enum**: constraining it would fail the whole response over one unrecognized part and throw away the detections that did map.
+- `backend/src/ai/taxonomy-matcher.ts` (+36 specs) — maps free text onto `part_taxonomies`. Handles phrase/token synonyms (bonnet→hood, wing→fender, boot lid→trunk), and `driver→left` / `passenger→right` because **the taxonomy mixes both conventions in its own rows** (`Door (Driver Front)` but `Fender (Left)`).
+- `backend/src/ai/image-type.ts` — magic-byte sniffing. Added because the declared Content-Type is untrustworthy in *both* directions: often `application/octet-stream` (would reject good photos), and when wrong it makes Gemini reject the call. Also covers HEIC, the iPhone default.
+- `backend/src/ai/detect-parts.{controller,service}.ts` (+7 specs) — batch of ≤12, concurrency 3, `Promise.allSettled` so one unreadable photo doesn't cost the worker the other seven.
+- `frontend/src/app/(mobile)/intake/[draftId]/scan/` (+9 specs) — the pick → analyze → confirm screen.
+- `frontend/src/lib/offline/detections.ts` (+8 specs) — the merge planner.
+- `PhotoPicker` — multi-select is a **separate prop shape** (`multiple` + `onFilesSelected`), so a caller physically cannot request many files and then read only the first. That was the original bug; the type system now forbids it.
+
+### Live-verified against real photos
+Ran the 4 real exterior walkaround photos of the user's own Genesis (`KMHGN4JE1FU096946`) through the live endpoint: **43 detections in 20.4s**, sides resolved correctly throughout. Independent corroboration worth noting: this flow graded `front bumper` **B / misaligned+scuff**, and the 2026-08-05 single-part pipeline had graded that same vehicle's Bumper (Front) **B / 85% / misalignment+scratch** — different prompt, different photo, same verdict.
+
+### Two real bugs the live run caught that no unit test would have
+1. **Rear doors were being offered as front doors.** The seeded taxonomy has only *front* doors, so `"left rear door"` matched base `door`, found no side-consistent row, and fell back to offering **both front doors** as candidates — inviting a worker to file a rear door as a front one. Now: side info that contradicts every candidate returns **unmapped**, never a guess. A wrong part number is worse than an unresolved one. Regression test added.
+2. **`"back bumper"` resolved to nothing.** `back` was in `SIDE_ALIASES` but missing from `SIDE_TOKENS`, so it was treated as part of the part's *name*. `SIDE_TOKENS` is now derived from the alias keys so they cannot drift apart.
+
+### The subtle one: grades had to be carried through sync
+A scene photo holds many parts, but the existing sync enqueues the **single-part** grading prompt per image. Left alone, every part sharing a walkaround photo would have been stamped with one arbitrary grade, silently overwriting per-part grades the AI had already got right. So `PartDraft` now carries `detections[]` (per **photo**, not per part — two angles of one bumper can legitimately disagree), `buildIntakeFormData()` sends them, and `VehiclesService.intake()` persists them as `AiAnalysis` rows and **skips the queue for exactly those photos**. Hand-shot photos on the same part still queue normally. Two e2e tests pin this: one asserts two parts sharing one photo keep their own grades and `analyzePartImage` is **never called**; the other asserts a detection-free photo still does.
+
+### Taxonomy duplicates — the backlog's diagnosis was wrong
+The backlog blamed `seed:taxonomy` running without an upsert guard. It has had one since day one (`taxonomy.seed.ts:46`). The real source: **`analytics.e2e-spec.ts` created a `Fender` row and never deleted it (12 runs → 12 rows), and `part-image-file.e2e-spec.ts` did the same with `Radiator` (4 extra)**. Every other suite cleans up. `part_taxonomies` is shared reference data with no RLS and no cascade from `Tenant`, so deleting the test tenant never reclaimed these. Both suites now clean up, and the 16 accumulated rows were deleted (all confirmed unused — 0 referencing parts, verified before deleting).
+
+**One leftover deliberately kept:** a `Tail Light` row from `vehicle-reopen.e2e-spec.ts` is referenced by a real part, so deleting it would orphan that part. It is semantically ambiguous with `Taillight (Left)/(Right)` — worth reconciling, but not by breaking live data.
+
+### Verification
+Backend **61 unit** (was 16) + **77 e2e / 16 suites** all green, `tsc --noEmit` clean, eslint **0 errors**. Frontend **193 tests** (was 176), `tsc --noEmit` clean, lint 0 errors, `next build` succeeds with `/intake/[draftId]/scan` present and no route collision.
+
+**Worth a look tomorrow:** the full backend e2e suite passed **16/16 with `--runInBand`, and the BullMQ/ioredis teardown flake did not fire**. That is encouraging but **not proof** — the flake was ~1-in-8 locally and only near-deterministic under CI contention. See item 2 in "Start here" below.
+
 ## 2026-08-05 — first real end-to-end run, and what it exposed
 
 **The product thesis finally ran end to end, live, for the first time.** A real worker session went VIN → 4 exterior photos → part → photo → Finish → sync → backend → Gemini, and produced a genuine grade on the user's own vehicle (`KMHGN4JE1FU096946`, Bumper (Front): **grade B, 85% confidence, `misalignment`/`scratch`**). Item 1 of the previous session's "still open" list is closed. Everything below was found by actually walking that path.
@@ -31,9 +211,9 @@ A worker had no way to see a vehicle once its draft synced — Home only lists i
 - **The mobile route is `/previous-vehicles`, deliberately not `/vehicles`.** Next route groups don't namespace URLs, so `(mobile)/vehicles` and `(desktop)/vehicles` both resolve to `/vehicles` and Turbopack fails the build with "two parallel pages that resolve to the same path". Confirmed by building it. Same collision class that made the worker Home screen unreachable for all of Phase 7.
 - **These uploads bypass the IndexedDB draft queue** and POST straight to the server, because the vehicle already exists server-side and there's no draft to attach them to. So unlike intake, **this screen requires a connection.** If offline support here is wanted, that's a real design change, not a tweak.
 
-## ▶ Start here next session (2026-08-06)
+## ▶ Start here next session (2026-08-07)
 
-**State:** 8 commits on branch `feat/intake-endpoint-and-inventory-editing`, working tree clean, **nothing pushed**. Backend 16 unit + all e2e green, frontend 176 tests green, both lint (0 errors) and `tsc --noEmit` clean, `next build` succeeds.
+**State:** 8 commits on branch `feat/intake-endpoint-and-inventory-editing`, **nothing pushed**, plus **today's bulk-scan work is uncommitted in the working tree**. Backend 61 unit + 77 e2e green, frontend 193 tests green, both lint (0 errors) and `tsc --noEmit` clean, `next build` succeeds.
 
 **To resume:**
 ```
@@ -44,17 +224,36 @@ npm run dev:frontend          # -> http://localhost:3000
 Worker login: tenant `eab0ca24-451f-48e7-a4ae-8de8a680a115`, Demo Worker, PIN `1234`.
 Manager login: same tenant, `manager@demo-yard.local` / `manager-dev-password`.
 
-**Suggested order:**
-1. **Decide whether to push** these 8 commits / open a PR. Nothing is on `main` yet.
-2. **Re-run backend e2e and see if the flake is gone** now that the process-crash cause is fixed. If it is, drop `continue-on-error` from `backend` in `.github/workflows/ci.yml` — that's a real CI quality win and the TODO in that file can go.
-3. **Clean up the orphaned parts + duplicate `Fender` taxonomy rows** (P1 below). Small, and they're actively causing noise — the orphans are what crashed the API tonight.
-4. **AI multi-part scene detection** — the feature the user actually asked for and the only thing on the roadmap not yet started. Agreed shape: worker photographs the vehicle from all sides → Gemini returns *every* part it can identify (bumper, hood, what's visible underneath, etc.) → **AI suggests, human confirms** — the manager reviews and re-grades rather than parts being auto-created. No new API or key needed; Gemini is already wired, working, and billed. Needs: a new prompt returning an array of detections per image (the current `GRADING_PROMPT` returns one grade for one part), a mapping from free-text detections onto `part_taxonomies`, and a confirmation surface. Note the existing prompt/schema live in `backend/src/ai/gemini.service.ts` and `gemini-response.schema.ts`.
+### 🔴 Do this first: the bulk-scan UI has never been clicked in a browser
+Everything about it is proven at the API and unit level — the endpoint was run against 4 real photos and returned 43 correctly-mapped detections, and the screen has 9 tests. But **no human has used the actual screen**. Given this project's own history (the live walkthrough on 2026-08-02 found two bugs no test caught; the very first live run of the detection endpoint today found two more), assume there is something wrong with it.
 
-**Unverified, worth a look first thing:** the `/previous-vehicles` **list** screen was confirmed live in a browser (renders all 4 vehicles with VINs and part counts), and the worker `GET /vehicles` call was confirmed via curl (HTTP 200). The **detail** screen — photo previews and the two add-photo paths — is covered by 10 frontend tests and 7 backend e2e tests but was **never clicked in a real browser**; the automation tooling went unresponsive before I could. Assume it works, but eyeball it before building on top of it.
+Path: worker login → New Vehicle → VIN → parts screen → **"Scan parts from photos"** → pick several photos → confirm → they should appear on the parts screen with photo counts → Finish → sync → they should land in the Review Queue **already graded**, with no `pending_ai` stragglers.
+
+### Then, in rough order
+1. **Commit today's work and decide about pushing.** 8 commits + today's changes are still local; nothing is on `main`.
+2. ~~**Re-run backend e2e a few times and settle the flake question.**~~ **Done 2026-08-08 — see the section at the top of this file.** It was two independent bugs, not one. Mode 1 (the `Connection is closed` teardown race) is root-caused and fixed; mode 2 (a native `0xC0000409` crash) is newly identified and still open. CI stays `continue-on-error` — the "if it holds, drop it" condition is not met. Note also that the long-standing "cross-file race" diagnosis was simply wrong.
+3. **Taxonomy gaps the live run exposed.** Real detections that have no row and so cannot be filed at all: **rear doors** (the taxonomy has only front), **grille**, **windshield**, **rear window/quarter glass**, **sunroof**, **quarter panel**. Rear doors are the glaring one — every 4-door vehicle has two. Adding rows is a product decision about what this yard actually sells, which is why it wasn't done unilaterally. Also reconcile the leftover `Tail Light` row against `Taillight (Left)/(Right)` (it's referenced by a real part, so it needs reassignment, not deletion).
+4. **Six orphaned zero-photo parts** on `KMHGN4JE1FU096946` — still there, still ungradeable, still undeletable from any screen. Related P1: there is still **no way to remove a part from a draft**.
+5. **Cost/latency check on bulk scan.** 4 photos ≈ 20s and 4 Gemini calls. A yard doing 30 vehicles/day at 6 photos each is ~180 calls/day. Nobody has looked at what that costs. Concurrency is 3 and the batch cap is 12 (`detect-parts.controller.ts`) if either needs tuning.
+
+### Phone access (set up 2026-08-06, may need re-checking)
+`frontend/.env.local` (gitignored, no secrets) points the PWA at `http://192.168.1.26:3001` so a phone can reach the API — without it the phone resolves `localhost` to *itself*. Open **http://192.168.1.26:3000** on the phone.
+
+Three traps, all hit today:
+- **The IP is DHCP.** If it changes, update `.env.local` **and restart the frontend** — `NEXT_PUBLIC_*` is inlined at startup, not read per request.
+- **Verify with `Get-NetAdapter`, not a local request.** The Wi-Fi adapter holds a stale `192.168.1.193` lease while `Disconnected`, and Windows happily answers requests to it *from this machine* — so a local curl succeeds while the phone gets nothing. `Ethernet 7` (`192.168.1.26`) is the live one.
+- **A firewall rule is required** (inbound is blocked by default on all three profiles) and needs an elevated shell:
+  `New-NetFirewallRule -DisplayName "Junkyard dev (3000,3001)" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 3000,3001 -Profile Private`
+
+**The live camera will not work on the phone over plain HTTP** — `getUserMedia` requires a secure context. This is a browser rule, not an app bug. The file picker (and therefore the whole bulk-scan flow) works fine. Real camera capture on a device needs HTTPS: a tunnel such as `cloudflared`/`ngrok`. This also means the long-standing "real-device camera never verified" item **still cannot be closed** over LAN HTTP. NordVPN (NordLynx) is active on this machine and is the next suspect if the phone can't connect after the firewall rule.
+
+**Still unverified from 2026-08-05:** the `/previous-vehicles` **detail** screen (photo previews + the two add-photo paths) is covered by 10 frontend and 7 backend tests but has never been clicked in a real browser.
 
 ## Consolidated backlog (as of 2026-08-05)
 
 All 7 BUILD_PLAN phases are complete and the core pipeline is live-verified. This is everything known to be left, in rough priority order. Kept here rather than in chat so it survives the session.
+
+> **Updated 2026-08-06:** the "AI multi-part scene detection" roadmap item is **built and live-verified** — see the section at the top of this file. The note further down saying the *manager* would confirm detections is superseded: the user chose **worker confirms on the phone**, and that is what shipped.
 
 ### ~~P0~~ — both fixed 2026-08-05, live-verified
 - ~~**Sync never fires automatically while online.**~~ **Fixed.** `registerSyncTriggers()` now drains on registration, on a draft becoming pending, and on `online`. Needed a re-entrancy guard: `syncPendingDrafts()` writes back through the store, and a draft landing in `sync_failed` *raises* the pending count, so the subscription would otherwise retrigger a failing sync forever. Verified live — a fresh Ford F-150 intake synced with no manual step and came back `pending_review` with a Gemini grade.
@@ -63,9 +262,10 @@ All 7 BUILD_PLAN phases are complete and the core pipeline is live-verified. Thi
 ### P1 — real gaps in what's built
 - **No way to remove a part from a draft.** A part is created the moment it's picked; there is still no delete affordance anywhere in the worker flow. The Finish gate now prevents *shipping* a zero-photo part, but a worker who picks the wrong part has to photograph it anyway to proceed.
 - **Reopening a vehicle requires a connection** (see the section above) — those uploads skip the offline draft queue by design. Fine for a yard with wifi; a real gap if attendants work dead zones.
-- **Six orphaned zero-photo parts** on `KMHGN4JE1FU096946` — pre-existing data, ungradeable, undeletable from any screen.
-- **~12 duplicate `Fender` taxonomy rows** — likely `seed:taxonomy` run repeatedly with no upsert guard. Affects every worker's part picker.
-- **Real-device camera never verified.** `getUserMedia` fails in every environment used so far (`Requested device not found`); only the `PhotoPicker` fallback has ever been exercised. Needs one pass on an actual phone.
+- **Six orphaned zero-photo parts** on `KMHGN4JE1FU096946` — **partly addressed 2026-08-08**: the new manager screen at `/vehicles/[vehicleId]` lists them, flags them as having no photos, and can add one, which grades them. So they are no longer permanently ungradeable. They are still **undeletable** from any screen, and a manager still has to supply a photo of a part that may no longer exist.
+- ~~**~12 duplicate `Fender` taxonomy rows** — likely `seed:taxonomy` run repeatedly with no upsert guard.~~ **Fixed 2026-08-06, and the stated cause was wrong.** The seed has always had an upsert guard; the real source was two e2e suites (`analytics`, `part-image-file`) creating taxonomy rows and never deleting them. Both now clean up; the 16 accumulated rows are gone. See today's section at the top.
+- **Taxonomy has no row for several parts the AI genuinely detects**: rear doors (front only today), grille, windshield, rear window, sunroof, quarter panel. Surfaced by the bulk-scan live run — these come back as "unmapped" and cannot be filed.
+- **Real-device camera never verified**, and **cannot be** over the current LAN HTTP setup — `getUserMedia` requires a secure context, so a phone on `http://192.168.1.26:3000` will never get camera access regardless of hardware. Needs HTTPS (tunnel) to ever close this item. Only the `PhotoPicker` path has ever been exercised.
 - **Settings is missing the IntegrationCard (API keys)** that DESIGN_SPEC §3.15 specifies — only the AI confidence threshold was built.
 - **Ghost overlay is a generic centered box**, not the per-taxonomy reference silhouette DESIGN_SPEC §6 describes. No such art exists yet.
 - **Invalid `taxonomyId` on intake returns 500, not 400** (unhandled Postgres FK violation).
@@ -74,7 +274,7 @@ All 7 BUILD_PLAN phases are complete and the core pipeline is live-verified. Thi
 - **Object storage.** `LocalFileStorage` writes to backend disk. This does not survive a real deployment (multiple instances, ephemeral containers) — S3/R2/GCS is a prerequisite for hosting anything, not a nice-to-have.
 - **Deployment itself**: hosting, managed Postgres w/ pgvector, production secrets, migration strategy. Never discussed.
 - **Transactional email.** No invite, password-reset, or notification flow exists; managers are created only by an owner typing a password into the Users screen.
-- **Backend e2e flake** (`users.e2e-spec.ts` / BullMQ cross-file teardown race) is `continue-on-error` in CI. Known, deliberately downgraded, still there.
+- **Backend e2e flake** is `continue-on-error` in CI. **Partly fixed 2026-08-08, and the "BullMQ cross-file teardown race" description was wrong** — it was two independent bugs, and the first reproduces in a single spec file running alone. Mode 1 fixed; mode 2 (native `0xC0000409` crash on repeated app teardown) still open and is now the only thing keeping this non-gating. See the 2026-08-08 section at the top.
 
 ### P3 — schema built but unused
 `Embedding`, `PricingHistory`, and `Listing` entities exist with tables, RLS policies, and migrations, but are referenced **nowhere** in application code — verified by grep. Built day-one per the MEMORY.md decision to model the full schema up front. Harmless, but don't mistake their existence for working features: pgvector similarity search, price history, and marketplace listing state are all unimplemented.
