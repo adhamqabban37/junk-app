@@ -25,15 +25,15 @@ Tracks completion against `docs/BUILD_PLAN.md`. Check boxes as each phase's acce
 | Suite | Count | |
 |---|---|---|
 | Backend unit | **126 / 9 suites** | ✅ green |
+| Backend e2e | **103 / 18 suites** | ✅ green, one clean run in 39.6s |
 | Frontend | **235 / 39 files** | ✅ green |
-| Backend e2e | **103 / 18 suites** | ⚠️ **not run** — Docker daemon was down, no Postgres/Redis |
 
 `tsc --noEmit` clean both sides. eslint **0 errors** (136 backend warnings, 1 frontend — both pre-existing; a stray unused `useRef` import was removed).
 
-**Backend e2e has not been run since 2026-08-12.** Start Docker Desktop, `npm run db:up`, then `npm run test:e2e --workspace=backend` before trusting it. Note that the native crash (`0xC0000409`, ~1 run in 3) is still expected and CI stays `continue-on-error`.
+The e2e run was clean this time, which proves nothing on its own — the native crash (`0xC0000409`) is ~1 run in 3 and a single green run has never been evidence here. CI stays `continue-on-error`. E2E needs Docker: `npm run db:up` first.
 
 ### Then, in rough order
-1. **Run backend e2e** (needs Docker), then **decide about pushing** — 21 commits still exist only on this laptop.
+1. **Decide about pushing** — 22 commits still exist only on this laptop.
 2. **Price.** Still a hardcoded `''` in `parts.service.ts`. Mandatory for Car-Part.com, and the only Phase-1 item that does **not** depend on the NDA'd spec.
 3. **Start the Car-Part.com recycler registration + NDA.** It is days of latency and zero code, and it blocks nothing else in the meantime.
 4. **D4 — the largest remaining before-customers migration**: part commercial fields (`inventory_number`, `list_price`, `core_charge`, `grade_basis`, `location_code`) and the **status split** into `review_status` / `physical_status` / `commercial_status`. Cheap now against 23 dev parts; a real data migration once a customer has thousands.
