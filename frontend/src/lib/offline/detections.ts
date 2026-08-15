@@ -1,3 +1,4 @@
+import { randomId } from "../random-id";
 import type { DraftPhoto, PartDetectionResult, PartDraft } from "./types";
 
 /** One detection the worker ticked, paired with the photo it came from. */
@@ -5,7 +6,7 @@ export interface AcceptedDetection {
   taxonomyId: string;
   taxonomyName: string;
   photo: DraftPhoto;
-  grade: "A" | "B" | "C";
+  grade: "A" | "B" | "C" | "D";
   damageCodes: string[];
   confidence: number;
 }
@@ -43,7 +44,7 @@ export interface DetectionMergePlan {
 export function planDetectionMerge(
   accepted: AcceptedDetection[],
   existingParts: PartDraft[],
-  newPartId: () => string = () => crypto.randomUUID(),
+  newPartId: () => string = () => randomId(),
 ): DetectionMergePlan {
   const byTaxonomy = new Map<string, AcceptedDetection[]>();
   for (const detection of accepted) {

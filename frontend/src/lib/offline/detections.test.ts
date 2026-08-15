@@ -13,7 +13,7 @@ const accepted = (
   taxonomyId: string,
   taxonomyName: string,
   photoId: string,
-  grade: "A" | "B" | "C" = "A",
+  grade: "A" | "B" | "C" | "D" = "A",
 ): AcceptedDetection => ({
   taxonomyId,
   taxonomyName,

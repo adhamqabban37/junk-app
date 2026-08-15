@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { randomId } from "../random-id";
 import { deleteDraft, listDrafts, putDraft } from "./db";
 import type { DetectionMergePlan } from "./detections";
 import type {
@@ -6,6 +7,7 @@ import type {
   PartDetectionResult,
   PartDraft,
   VehicleDraft,
+  VehicleImageAngle,
   VinEntryMethod,
 } from "./types";
 
@@ -17,7 +19,16 @@ interface IntakeState {
   setVin: (draftId: string, vin: string, method: VinEntryMethod) => Promise<void>;
   setDecoded: (draftId: string, decoded: VehicleDraft["decoded"]) => Promise<void>;
   addExteriorPhoto: (draftId: string, photo: DraftPhoto) => Promise<void>;
+  /** Bulk add — one persist for the whole batch, see the implementation. */
+  addExteriorPhotos: (draftId: string, photos: DraftPhoto[]) => Promise<void>;
+  setExteriorPhotoAngle: (
+    draftId: string,
+    photoId: string,
+    angle: VehicleImageAngle,
+  ) => Promise<void>;
+  removeExteriorPhoto: (draftId: string, photoId: string) => Promise<void>;
   addPart: (draftId: string, part: PartDraft) => Promise<void>;
+  removePart: (draftId: string, partId: string) => Promise<void>;
   addPartPhoto: (draftId: string, partId: string, photo: DraftPhoto) => Promise<void>;
   applyDetectionPlan: (draftId: string, plan: DetectionMergePlan) => Promise<void>;
   queueForSync: (draftId: string) => Promise<void>;
@@ -64,7 +75,7 @@ export const useIntakeStore = create<IntakeState>((set, get) => {
     // killed and relaunched mid-sync (Phase 3 planning-gate finding).
     createDraft: async () => {
       const draft: VehicleDraft = {
-        id: crypto.randomUUID(),
+        id: randomId(),
         vin: null,
         vinEntryMethod: null,
         decoded: null,
@@ -92,6 +103,45 @@ export const useIntakeStore = create<IntakeState>((set, get) => {
     addExteriorPhoto: async (draftId, photo) => {
       const draft = findDraftOrThrow(get().drafts, draftId);
       await persist({ ...draft, exteriorPhotos: [...draft.exteriorPhotos, photo] });
+    },
+
+    addExteriorPhotos: async (draftId, photos) => {
+      // One persist for the whole batch, not one per photo. Adding eight
+      // photos through addExteriorPhoto() in a loop would read a stale
+      // `draft` from the closure on every iteration after the first and
+      // write back a list missing the ones before it.
+      const draft = findDraftOrThrow(get().drafts, draftId);
+      await persist({ ...draft, exteriorPhotos: [...draft.exteriorPhotos, ...photos] });
+    },
+
+    setExteriorPhotoAngle: async (draftId, photoId, angle) => {
+      const draft = findDraftOrThrow(get().drafts, draftId);
+      await persist({
+        ...draft,
+        exteriorPhotos: draft.exteriorPhotos.map((p) =>
+          p.id === photoId ? { ...p, angle } : p,
+        ),
+      });
+    },
+
+    removeExteriorPhoto: async (draftId, photoId) => {
+      const draft = findDraftOrThrow(get().drafts, draftId);
+      await persist({
+        ...draft,
+        exteriorPhotos: draft.exteriorPhotos.filter((p) => p.id !== photoId),
+      });
+    },
+
+    removePart: async (draftId, partId) => {
+      // A part is created the instant it is picked, so a mis-tap used to be
+      // permanent: it had no photo, no way to be deleted, and the Finish
+      // gate refuses to ship a photo-less part -- which left the whole
+      // draft unshippable. Long-standing P1 in docs/PROGRESS.md.
+      const draft = findDraftOrThrow(get().drafts, draftId);
+      await persist({
+        ...draft,
+        parts: draft.parts.filter((p) => p.id !== partId),
+      });
     },
 
     addPart: async (draftId, part) => {

@@ -9,15 +9,28 @@ import { useTaxonomyStore } from "@/lib/offline/taxonomy-store";
 import { useAuthSession } from "@/lib/auth-session";
 
 const pushMock = vi.fn();
+const replaceMock = vi.fn();
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: pushMock }),
+  useRouter: () => ({ push: pushMock, replace: replaceMock }),
 }));
+
+function makePhoto(id: string) {
+  return {
+    id,
+    blob: new Blob(["x"], { type: "image/jpeg" }),
+    angle: "front" as const,
+    qualityFlags: { blurry: false, tooDark: false },
+    capturedAt: new Date().toISOString(),
+  };
+}
 
 describe("PartsPageClient", () => {
   let draftId: string;
 
   beforeEach(async () => {
     pushMock.mockReset();
+    replaceMock.mockReset();
+    sessionStorage.clear();
     vi.stubGlobal(
       "fetch",
       vi.fn().mockRejectedValue(new Error("offline in tests")),
@@ -155,5 +168,77 @@ describe("PartsPageClient", () => {
     await user.click(await screen.findByRole("button", { name: /alternator.*0 photos/i }));
 
     expect(pushMock).toHaveBeenCalledWith(`/intake/${draftId}/parts/part-1/camera`);
+  });
+
+  describe("when the vehicle already has photos", () => {
+    // The bug this prevents, in full: a worker uploads ten walkaround
+    // photos, lands on an empty part list, taps nine parts out of the
+    // taxonomy by hand -- each created with no photo -- and is then blocked
+    // by "Still needs a photo: Bumper (Front), Door (Driver Front), ..."
+    // for photos they had already taken. They should be scanning instead.
+    it("sends the worker to the scan rather than an empty list", async () => {
+      await useIntakeStore.getState().addExteriorPhoto(draftId, makePhoto("p1"));
+
+      render(<PartsPageClient draftId={draftId} />);
+
+      await waitFor(() =>
+        expect(replaceMock).toHaveBeenCalledWith(`/intake/${draftId}/scan`),
+      );
+    });
+
+    it("does not redirect once parts exist", async () => {
+      await useIntakeStore.getState().addExteriorPhoto(draftId, makePhoto("p1"));
+      await useIntakeStore.getState().addPart(draftId, {
+        id: "part-1",
+        taxonomyId: "tax-alt",
+        taxonomyName: "Alternator",
+        photos: [],
+      });
+
+      render(<PartsPageClient draftId={draftId} />);
+      await screen.findByText(/added/i);
+
+      expect(replaceMock).not.toHaveBeenCalled();
+    });
+
+    // Without a flag that survives navigation this is an inescapable loop:
+    // the worker returns here to pick a part by hand, the page remounts with
+    // the same photos-and-no-parts state, and gets bounced straight back.
+    it("only offers the scan once, so returning by hand is possible", async () => {
+      await useIntakeStore.getState().addExteriorPhoto(draftId, makePhoto("p1"));
+
+      const first = render(<PartsPageClient draftId={draftId} />);
+      await waitFor(() => expect(replaceMock).toHaveBeenCalledTimes(1));
+      first.unmount();
+
+      render(<PartsPageClient draftId={draftId} />);
+      await screen.findByRole("button", { name: /scan parts from photos/i });
+
+      expect(replaceMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // Long-standing P1: a part is created the moment it is picked, so one
+  // mis-tap produced a photo-less part that could not be deleted and that
+  // the Finish gate then refused to ship -- making the whole draft
+  // unshippable.
+  it("removes a mis-tapped part", async () => {
+    await useIntakeStore.getState().addPart(draftId, {
+      id: "part-1",
+      taxonomyId: "tax-alt",
+      taxonomyName: "Alternator",
+      photos: [],
+    });
+    const user = userEvent.setup();
+    render(<PartsPageClient draftId={draftId} />);
+
+    await user.click(
+      await screen.findByRole("button", { name: /remove alternator/i }),
+    );
+
+    await waitFor(() => {
+      const draft = useIntakeStore.getState().drafts.find((d) => d.id === draftId);
+      expect(draft?.parts).toHaveLength(0);
+    });
   });
 });

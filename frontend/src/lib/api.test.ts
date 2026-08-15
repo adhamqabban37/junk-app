@@ -1,5 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import { ApiError, authFetch, fetchTaxonomy, listWorkers, loginManager, loginPin } from "./api";
+import {
+  ApiError,
+  authFetch,
+  classifyVehiclePhotos,
+  detectParts,
+  fetchTaxonomy,
+  listWorkers,
+  loginManager,
+  loginPin,
+} from "./api";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -109,5 +118,80 @@ describe("loginManager", () => {
     await expect(
       loginManager("tenant-1", "manager@yard.local", "wrong", fetchMock),
     ).rejects.toMatchObject({ message: "Invalid email or password", status: 401 });
+  });
+});
+
+// A worker's walkaround is however many photos they took. The server caps
+// each request, so without batching a large set failed outright instead of
+// just taking longer -- and the index arithmetic below is what stops batch
+// 2's results being attached to batch 1's photos, which would be silent.
+describe("AI endpoints batch large photo sets", () => {
+  function blobs(n: number): Blob[] {
+    return Array.from({ length: n }, () => new Blob(["x"], { type: "image/jpeg" }));
+  }
+
+  it("sends one request when the set is small", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ images: [{ index: 0, detections: [] }] }),
+    );
+
+    const images = await detectParts("t", blobs(1), fetchMock);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(images).toHaveLength(1);
+  });
+
+  it("splits a set larger than one request and renumbers the results", async () => {
+    const fetchMock = vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+      const count = (init.body as FormData).getAll("files").length;
+      // Each batch numbers its own images from 0 -- exactly what has to be
+      // corrected on the way out.
+      return Promise.resolve(
+        jsonResponse({
+          images: Array.from({ length: count }, (_, i) => ({ index: i, detections: [] })),
+        }),
+      );
+    });
+
+    const images = await detectParts("t", blobs(15), fetchMock);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(images).toHaveLength(15);
+    // Contiguous 0..14, not 0..11 followed by 0..2.
+    expect(images.map((i) => i.index)).toEqual(
+      Array.from({ length: 15 }, (_, i) => i),
+    );
+  });
+
+  it("batches angle classification the same way", async () => {
+    const fetchMock = vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+      const count = (init.body as FormData).getAll("files").length;
+      return Promise.resolve(
+        jsonResponse({
+          images: Array.from({ length: count }, (_, i) => ({
+            index: i,
+            angle: "front",
+            confidence: 0.9,
+            note: null,
+          })),
+        }),
+      );
+    });
+
+    const images = await classifyVehiclePhotos("t", blobs(20), fetchMock);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(images.map((i) => i.index)).toEqual(
+      Array.from({ length: 20 }, (_, i) => i),
+    );
+  });
+
+  it("does not call the API at all for an empty set", async () => {
+    const fetchMock = vi.fn();
+
+    const images = await detectParts("t", [], fetchMock);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(images).toEqual([]);
   });
 });

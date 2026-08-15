@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useAuthSession } from "@/lib/auth-session";
+import { randomId } from "@/lib/random-id";
 import { useIntakeStore } from "@/lib/offline/store";
 import { useTaxonomyStore } from "@/lib/offline/taxonomy-store";
 import type { TaxonomyItem } from "@/lib/offline/types";
@@ -16,6 +17,7 @@ export default function PartsPageClient({ draftId }: { draftId: string }) {
   const draftsHydrated = useIntakeStore((s) => s.hydrated);
   const hydrateDrafts = useIntakeStore((s) => s.hydrate);
   const addPart = useIntakeStore((s) => s.addPart);
+  const removePart = useIntakeStore((s) => s.removePart);
   const queueForSync = useIntakeStore((s) => s.queueForSync);
   const draft = drafts.find((d) => d.id === draftId);
 
@@ -47,6 +49,38 @@ export default function PartsPageClient({ draftId }: { draftId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
+  /**
+   * A worker who photographed the vehicle should never land on an empty
+   * part list and feel obliged to tap parts out of the taxonomy by hand.
+   *
+   * That is exactly what happened: picking a part here creates it with no
+   * photo, and the Finish gate then demands a photo for every one of them --
+   * so a worker with ten perfectly good walkaround photos ended up with
+   * nine empty parts and a red "still needs a photo" list. Send them to the
+   * scan, which analyzes the photos they already took.
+   *
+   * Conditions are deliberately narrow: only when photos exist AND no parts
+   * do, and only once per draft per session.
+   *
+   * The "once" has to outlive this component, not just this mount. A plain
+   * ref would send the worker to the scan, and then send them straight back
+   * the moment they returned here to pick a part by hand -- an inescapable
+   * loop, since returning remounts this page with the same
+   * photos-but-no-parts state that triggered it. sessionStorage is the
+   * smallest thing that survives that navigation without adding a field to
+   * the persisted draft model.
+   */
+  useEffect(() => {
+    if (!draftsHydrated || !draft) return;
+    if (draft.parts.length > 0) return;
+    if (draft.exteriorPhotos.length === 0) return;
+
+    const key = `intake:${draftId}:scan-offered`;
+    if (typeof window === "undefined" || sessionStorage.getItem(key)) return;
+    sessionStorage.setItem(key, "1");
+    router.replace(`/intake/${draftId}/scan`);
+  }, [draftsHydrated, draft, draftId, router]);
+
   const addedTaxonomyIds = useMemo(
     () => new Set((draft?.parts ?? []).map((p) => p.taxonomyId)),
     [draft?.parts],
@@ -67,7 +101,7 @@ export default function PartsPageClient({ draftId }: { draftId: string }) {
 
   async function handleSelect(item: TaxonomyItem) {
     const part = {
-      id: crypto.randomUUID(),
+      id: randomId(),
       taxonomyId: item.id,
       taxonomyName: item.name,
       photos: [],
@@ -115,14 +149,35 @@ export default function PartsPageClient({ draftId }: { draftId: string }) {
               and no way to be removed, silently blocking Finish forever. */}
           <ul className="grid gap-1">
             {draft.parts.map((part) => (
-              <li key={part.id}>
+              <li key={part.id} className="flex items-center gap-1">
                 <Button
                   variant="outline"
-                  className="w-full justify-between px-3 py-2 text-sm font-normal"
+                  className="flex-1 justify-between px-3 py-2 text-sm font-normal"
                   onClick={() => router.push(`/intake/${draftId}/parts/${part.id}/camera`)}
                 >
                   <span>{part.taxonomyName}</span>
-                  <span className="text-muted-foreground">{part.photos.length} photos</span>
+                  <span
+                    className={
+                      part.photos.length === 0
+                        ? "text-destructive"
+                        : "text-muted-foreground"
+                    }
+                  >
+                    {part.photos.length} photos
+                  </span>
+                </Button>
+                {/* A mis-tapped part used to be permanent: created with no
+                    photo, undeletable, and the Finish gate refuses to ship a
+                    photo-less part -- so one wrong tap made the whole draft
+                    unshippable. */}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  aria-label={`Remove ${part.taxonomyName}`}
+                  className="text-muted-foreground"
+                  onClick={() => void removePart(draftId, part.id)}
+                >
+                  Remove
                 </Button>
               </li>
             ))}

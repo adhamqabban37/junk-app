@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { DraftPhotoView } from "@/components/mobile/draft-photo";
 import { PhotoPicker } from "@/components/mobile/photo-picker";
 import { Button } from "@/components/ui/button";
 import { ApiError, detectParts, type DetectedPartResponse } from "@/lib/api";
 import { useAuthSession } from "@/lib/auth-session";
 import { captureFromFile } from "@/lib/offline/capture";
+import { randomId } from "@/lib/random-id";
 import { planDetectionMerge, type AcceptedDetection } from "@/lib/offline/detections";
 import { useIntakeStore } from "@/lib/offline/store";
 import { useTaxonomyStore } from "@/lib/offline/taxonomy-store";
@@ -28,6 +30,9 @@ interface ReviewRow {
 function gradeTone(grade: string): string {
   if (grade === "A") return "bg-green-100 text-green-900";
   if (grade === "B") return "bg-amber-100 text-amber-900";
+  // C is real damage, D is severe -- distinct tones so a worker can tell
+  // them apart at a glance rather than reading every badge.
+  if (grade === "C") return "bg-orange-100 text-orange-900";
   return "bg-red-100 text-red-900";
 }
 
@@ -50,6 +55,8 @@ export default function ScanPageClient({ draftId }: { draftId: string }) {
   const [photoErrors, setPhotoErrors] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  /** The row whose photo is open full-size, or null. */
+  const [zoomed, setZoomed] = useState<ReviewRow | null>(null);
 
   useEffect(() => {
     if (!draftsHydrated) void hydrateDrafts();
@@ -59,10 +66,36 @@ export default function ScanPageClient({ draftId }: { draftId: string }) {
     if (!taxonomyHydrated) void hydrateTaxonomy();
   }, [taxonomyHydrated, hydrateTaxonomy]);
 
+  /**
+   * Scan the vehicle's own photos as soon as the worker gets here, without
+   * making them ask. They already uploaded the walkaround one step back;
+   * arriving at a screen that ignores those and demands the same files
+   * again is the complaint that prompted this.
+   *
+   * Guarded by a ref rather than by phase, so navigating back to this screen
+   * does not silently re-bill a second full scan -- one Gemini call per
+   * photo is real money, and a ten-photo walkaround is ten calls.
+   */
+  const autoScanStarted = useRef(false);
+  useEffect(() => {
+    if (autoScanStarted.current) return;
+    if (!draftsHydrated || !draft || !token) return;
+    if (draft.exteriorPhotos.length === 0) return;
+    autoScanStarted.current = true;
+    // Deferred one microtask: analyze() sets state on its first line, and
+    // doing that synchronously inside an effect trips
+    // react-hooks/set-state-in-effect (and would paint "picking" for a frame
+    // before immediately replacing it).
+    void Promise.resolve().then(() => analyzeExisting());
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- analyzeExisting is redefined every render; the ref is what makes this run once
+  }, [draftsHydrated, draft, token]);
+
   const taxonomyById = useMemo(
     () => new Map(taxonomyItems.map((t) => [t.id, t])),
     [taxonomyItems],
   );
+
+  const existingPhotoCount = draft?.exteriorPhotos.length ?? 0;
 
   async function handleFiles(files: File[]) {
     if (!token) {
@@ -79,12 +112,42 @@ export default function ScanPageClient({ draftId }: { draftId: string }) {
       // consistent JPEG regardless of what the phone handed us.
       const captured = await Promise.all(files.map((file) => captureFromFile(file)));
       const photos: DraftPhoto[] = captured.map((result) => ({
-        id: crypto.randomUUID(),
+        id: randomId(),
         blob: result.blob,
         qualityFlags: result.qualityFlags,
         capturedAt: new Date().toISOString(),
       }));
+      await analyze(photos);
+    } catch {
+      setError("Couldn't read those photos. Try again.");
+      setPhase("picking");
+    }
+  }
 
+  /**
+   * Runs detection over photos that are ALREADY in the draft.
+   *
+   * This is the path that matters: the worker photographed the vehicle one
+   * step earlier, and until now the scan screen ignored those entirely and
+   * demanded a second upload of the same files. That is the single biggest
+   * piece of wasted work in intake -- ten photos re-picked and re-uploaded
+   * on a yard connection, to analyze images the phone was already holding.
+   */
+  async function analyzeExisting() {
+    if (!draft || draft.exteriorPhotos.length === 0) return;
+    await analyze(draft.exteriorPhotos);
+  }
+
+  async function analyze(photos: DraftPhoto[]) {
+    if (!token) {
+      setError("You need to be logged in to scan photos.");
+      return;
+    }
+    setPhase("analyzing");
+    setError(null);
+    setPhotoErrors([]);
+
+    try {
       const images = await detectParts(
         token,
         photos.map((p) => p.blob),
@@ -162,19 +225,88 @@ export default function ScanPageClient({ draftId }: { draftId: string }) {
 
   return (
     <div className="flex flex-1 flex-col gap-6 p-6">
+      {zoomed && (
+        // Deliberately not a <dialog>: this has to work on an old phone
+        // browser in a yard, and a plain overlay has no support surprises.
+        // Any tap closes it -- there is nothing to interact with inside, so
+        // a dedicated close target would just be one more thing to hit.
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Photo graded for ${
+            zoomed.detection.taxonomyName ?? zoomed.detection.partName
+          }`}
+          className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-black/90 p-4"
+          onClick={() => setZoomed(null)}
+        >
+          <DraftPhotoView
+            blob={zoomed.photo.blob}
+            alt={`Photo the AI graded for ${
+              zoomed.detection.taxonomyName ?? zoomed.detection.partName
+            }`}
+            className="max-h-[70vh] w-auto max-w-full"
+          />
+          <div className="text-center text-sm text-white">
+            <p className="font-medium">
+              {zoomed.detection.taxonomyName ?? zoomed.detection.partName} — Grade{" "}
+              {zoomed.detection.grade}
+            </p>
+            <p className="text-white/70">
+              {Math.round(zoomed.detection.confidence * 100)}% confident
+              {zoomed.detection.damageCodes.length > 0 &&
+                ` · ${zoomed.detection.damageCodes.join(", ")}`}
+            </p>
+            <p className="mt-2 text-xs text-white/50">Tap anywhere to close</p>
+          </div>
+        </div>
+      )}
+
       <div className="space-y-1">
         <h1 className="text-xl font-semibold">Scan parts from photos</h1>
         <p className="text-sm text-muted-foreground">
-          Add photos of the vehicle from every side. The AI finds and grades the parts it
-          can see, then you confirm.
+          The AI finds and grades the parts it can see in the vehicle&apos;s photos, then
+          you confirm.
         </p>
       </div>
 
+      {/* Required, not decorative: a worker can arrive here automatically
+          from the parts step, and a screen you can be sent to must always
+          have a way out that isn't the browser's back button. */}
+      {phase !== "analyzing" && (
+        <Button
+          type="button"
+          variant="ghost"
+          className="self-start px-0 text-sm text-muted-foreground"
+          onClick={() => router.push(`/intake/${draftId}/parts`)}
+        >
+          ← Pick parts by hand instead
+        </Button>
+      )}
+
       {phase === "picking" && (
         <>
+          {existingPhotoCount > 0 && (
+            <div className="space-y-2 rounded-lg border border-border p-3">
+              <p className="text-sm font-medium">
+                {existingPhotoCount} photo{existingPhotoCount === 1 ? "" : "s"} from this
+                vehicle
+              </p>
+              <p className="text-xs text-muted-foreground">
+                These are the photos you already added. No need to pick them again.
+              </p>
+              <Button
+                type="button"
+                className="w-full"
+                onClick={() => void analyzeExisting()}
+              >
+                Scan {existingPhotoCount === 1 ? "it" : "them"} for parts
+              </Button>
+            </div>
+          )}
+
           <PhotoPicker
             inputId="scan-photos"
-            label="Choose photos"
+            label={existingPhotoCount > 0 ? "Or add more photos" : "Choose photos"}
             multiple
             onFilesSelected={(files) => void handleFiles(files)}
           />
@@ -242,6 +374,27 @@ export default function ScanPageClient({ draftId }: { draftId: string }) {
                             updateRow(row.key, { accepted: e.target.checked })
                           }
                         />
+                        {/* The photo the grade came from. Confirming "Grade C,
+                            82%, photo 3" without being able to look at photo 3
+                            is not review, it is rubber-stamping -- and the
+                            worker is the human-in-the-loop for this flow
+                            (CLAUDE.md rule 5). Tap to see it full size. */}
+                        <button
+                          type="button"
+                          aria-label={`View the photo graded for ${
+                            row.detection.taxonomyName ?? row.detection.partName
+                          }`}
+                          onClick={() => setZoomed(row)}
+                          className="shrink-0"
+                        >
+                          <DraftPhotoView
+                            blob={row.photo.blob}
+                            alt={`Photo the AI graded for ${
+                              row.detection.taxonomyName ?? row.detection.partName
+                            }`}
+                            className="h-16 w-16"
+                          />
+                        </button>
                         <div className="flex-1 space-y-1">
                           <label
                             htmlFor={`accept-${row.key}`}

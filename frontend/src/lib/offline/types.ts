@@ -38,7 +38,7 @@ export interface DraftPhoto {
 export interface PartDetectionResult {
   /** The DraftPhoto this grade came from. */
   photoId: string;
-  grade: "A" | "B" | "C";
+  grade: "A" | "B" | "C" | "D";
   damageCodes: string[];
   confidence: number;
 }

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { PhotoPicker } from "@/components/mobile/photo-picker";
 import { useCamera } from "@/hooks/use-camera";
 import { captureFrame, captureFromFile } from "@/lib/offline/capture";
+import { randomId } from "@/lib/random-id";
 import { useIntakeStore } from "@/lib/offline/store";
 
 export default function PartCameraPageClient({
@@ -38,7 +39,7 @@ export default function PartCameraPageClient({
     try {
       const { blob, qualityFlags } = await captureFrame(videoRef.current);
       await addPartPhoto(draftId, partId, {
-        id: crypto.randomUUID(),
+        id: randomId(),
         blob,
         qualityFlags,
         capturedAt: new Date().toISOString(),
@@ -51,7 +52,7 @@ export default function PartCameraPageClient({
   async function handleFileSelected(file: File) {
     const { blob, qualityFlags } = await captureFromFile(file);
     await addPartPhoto(draftId, partId, {
-      id: crypto.randomUUID(),
+      id: randomId(),
       blob,
       qualityFlags,
       capturedAt: new Date().toISOString(),
