@@ -4,6 +4,8 @@ import { PartTaxonomy } from '../database/entities';
 import { AiAnalysisProcessor } from './ai-analysis.processor';
 import { AiAnalysisService } from './ai-analysis.service';
 import { GeminiService } from './gemini.service';
+import { ClassifyAnglesController } from './classify-angles.controller';
+import { ClassifyAnglesService } from './classify-angles.service';
 import { CorrectionsController } from './corrections.controller';
 import { CorrectionsService } from './corrections.service';
 import { DetectPartsController } from './detect-parts.controller';
@@ -20,13 +22,18 @@ import { TaxonomyMatcher } from './taxonomy-matcher';
 // happened to be running at that moment.
 @Module({
   imports: [TypeOrmModule.forFeature([PartTaxonomy])],
-  controllers: [CorrectionsController, DetectPartsController],
+  controllers: [
+    CorrectionsController,
+    DetectPartsController,
+    ClassifyAnglesController,
+  ],
   providers: [
     GeminiService,
     AiAnalysisService,
     AiAnalysisProcessor,
     CorrectionsService,
     DetectPartsService,
+    ClassifyAnglesService,
     TaxonomyMatcher,
   ],
   // Exported for VehiclesModule's POST /vehicles/:id/scan, which runs the
