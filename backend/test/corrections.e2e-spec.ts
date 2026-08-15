@@ -29,6 +29,7 @@ describe('Corrections (e2e)', () => {
   let worker: User;
   let taxonomy: PartTaxonomy;
   let analysis: AiAnalysis;
+  let partId: string;
   const MANAGER_PASSWORD = 'correction-tests-password';
   const WORKER_PIN = '2468';
 
@@ -97,6 +98,7 @@ describe('Corrections (e2e)', () => {
         }),
       ),
     );
+    partId = part.id;
     const partImage = await withTenantContext(dataSource, tenant.id, (m) =>
       m.getRepository(PartImage).save(
         m.getRepository(PartImage).create({
@@ -186,22 +188,80 @@ describe('Corrections (e2e)', () => {
     });
   });
 
-  it('applies the corrected grade onto the AI analysis itself, so Inventory/CSV export show the corrected value, not the AI original', async () => {
+  // INVERTED DELIBERATELY (2026-08-12) -- read this before "fixing" it back.
+  //
+  // This test used to assert the opposite: that a correction was written
+  // ONTO the AiAnalysis row. That was the behaviour, and it was wrong.
+  // human_corrections joins back to ai_analyses for the model version and
+  // the confidence at prediction time, so mutating the analysis silently
+  // corrupted the training context of every correction attached to it, and
+  // a field corrected twice lost its intermediate prediction outright --
+  // the exact dataset CLAUDE.md rule 6 exists to protect.
+  //
+  // The prediction is now immutable and the human's answer lives on the
+  // Part. The user-visible behaviour this test originally protected (a
+  // corrected grade reaching Inventory and the CSV export) is unchanged and
+  // is covered by the next test.
+  it('does NOT mutate the AI analysis -- the prediction is immutable', async () => {
     const token = await loginManager();
 
-    // Prior test already moved this analysis's grade to A -- correct it to
-    // C here so this test proves the write actually happens rather than
-    // coincidentally matching an already-correct value.
     await request(app.getHttpServer())
       .post(`/ai-analyses/${analysis.id}/corrections`)
       .set('Authorization', `Bearer ${token}`)
       .send({ field: 'grade', correctedValue: 'C' })
       .expect(201);
 
-    const updated = await withTenantContext(dataSource, tenant.id, (m) =>
+    const untouched = await withTenantContext(dataSource, tenant.id, (m) =>
       m.getRepository(AiAnalysis).findOneOrFail({ where: { id: analysis.id } }),
     );
-    expect(updated.grade).toBe(AiGrade.C);
+    // Still exactly what the model predicted in beforeAll, despite two
+    // corrections (B -> A in the previous test, then A -> C here).
+    expect(untouched.grade).toBe(AiGrade.B);
+    expect(untouched.damageCodes).toEqual(['scratch']);
+  });
+
+  it('surfaces the corrected grade through the parts API, so Inventory/CSV export show it instead of the AI original', async () => {
+    const token = await loginManager();
+
+    await request(app.getHttpServer())
+      .post(`/ai-analyses/${analysis.id}/corrections`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ field: 'grade', correctedValue: 'D' })
+      .expect(201);
+
+    const res = await request(app.getHttpServer())
+      .get(`/parts/${partId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const body = res.body as {
+      latestAnalysis: { id: string; grade: string; gradeSource: string };
+    };
+    expect(body.latestAnalysis.grade).toBe('D');
+    expect(body.latestAnalysis.gradeSource).toBe('human');
+    // Still the real analysis id -- the UI POSTs corrections against it.
+    expect(body.latestAnalysis.id).toBe(analysis.id);
+  });
+
+  // The chain records what was actually replaced. A second correction
+  // replaces the first human answer, not the AI's original prediction --
+  // otherwise the log would misrepresent what changed.
+  it('records the previous human answer as originalValue on a re-correction', async () => {
+    const token = await loginManager();
+
+    const res = await request(app.getHttpServer())
+      .post(`/ai-analyses/${analysis.id}/corrections`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ field: 'grade', correctedValue: 'A' })
+      .expect(201);
+
+    const correction = await withTenantContext(dataSource, tenant.id, (m) =>
+      m.getRepository(HumanCorrection).findOneOrFail({
+        where: { id: (res.body as { id: string }).id },
+      }),
+    );
+    // 'D' from the previous test, not 'B' from the AI.
+    expect(correction.originalValue).toBe('D');
   });
 
   it('404s when the AI analysis does not exist', async () => {

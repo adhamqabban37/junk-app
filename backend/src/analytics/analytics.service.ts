@@ -46,16 +46,25 @@ export class AnalyticsService {
       // model_version+part_image_id is already unique (idempotency key), so
       // grouping by grade across complete analyses is safe without a
       // separate "latest per part" join here.
+      //
+      // COALESCE onto the part's human-set grade, not the raw prediction:
+      // corrections used to be written back onto the analysis row, so this
+      // query saw them for free. Now that AiAnalysis is append-only it would
+      // otherwise report the AI's original grades and disagree with what
+      // Inventory and the CSV export show. Raw quoted column names rather
+      // than alias.property so the COALESCE is unambiguous across the join.
+      const EFFECTIVE_GRADE = `COALESCE("part"."final_grade", "analysis"."grade")`;
       const gradeDistributionRaw = await manager
         .getRepository(AiAnalysis)
         .createQueryBuilder('analysis')
-        .select('analysis.grade', 'grade')
+        .innerJoin(Part, 'part', '"part"."id" = "analysis"."part_id"')
+        .select(EFFECTIVE_GRADE, 'grade')
         .addSelect('COUNT(*)', 'count')
         .where('analysis.status = :status', {
           status: AiAnalysisStatus.COMPLETE,
         })
-        .andWhere('analysis.grade IS NOT NULL')
-        .groupBy('analysis.grade')
+        .andWhere(`${EFFECTIVE_GRADE} IS NOT NULL`)
+        .groupBy(EFFECTIVE_GRADE)
         .getRawMany<{ grade: string; count: string }>();
 
       const partsByStatus: Record<string, number> = {};

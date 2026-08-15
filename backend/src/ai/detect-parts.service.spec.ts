@@ -34,7 +34,7 @@ const file = (name: string): Express.Multer.File =>
     originalname: name,
   }) as Express.Multer.File;
 
-const detection = (partName: string, grade: 'A' | 'B' | 'C' = 'B') => ({
+const detection = (partName: string, grade: 'A' | 'B' | 'C' | 'D' = 'B') => ({
   part_name: partName,
   grade,
   damage_codes: ['scratch'],

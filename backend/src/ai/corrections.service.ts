@@ -2,49 +2,69 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { AiAnalysis, AiGrade } from '../database/entities/ai-analysis.entity';
 import { HumanCorrection } from '../database/entities/human-correction.entity';
+import { Part } from '../database/entities/part.entity';
 import { withTenantContext } from '../database/tenant-context';
+import {
+  EffectiveCondition,
+  effectiveCondition,
+} from '../parts/effective-condition';
 
-function originalValueFor(analysis: AiAnalysis, field: string): string | null {
+/**
+ * What this correction is replacing -- the value a manager was actually
+ * looking at when they changed it, which is the previous *human* answer if
+ * there is one and the AI's prediction otherwise.
+ *
+ * Not simply the AI's value: correcting a grade B->A and later A->C should
+ * record the second correction as replacing A, not B. A chain that always
+ * cited the original prediction would misrepresent what changed.
+ */
+function originalValueFor(
+  current: EffectiveCondition,
+  field: string,
+): string | null {
   switch (field) {
     case 'grade':
-      return analysis.grade;
+      return current.grade;
     case 'confidence':
-      return analysis.confidence === null ? null : String(analysis.confidence);
+      return current.confidence === null ? null : String(current.confidence);
     case 'damage_codes':
-      return JSON.stringify(analysis.damageCodes);
+      return JSON.stringify(current.damageCodes);
     default:
       return null;
   }
 }
 
 /**
- * Applies a human correction onto the AiAnalysis row itself, so the
- * corrected value -- not the AI's original guess -- is what Inventory,
- * the Review Queue, and CSV export show afterward (Phase 5 acceptance:
- * "manager ... corrects a field, approves it, sees it in Inventory,
- * exports a CSV containing it"). The original value is still captured on
- * the HumanCorrection row above for the Moat, so nothing about the AI's
- * original prediction is lost -- this only changes what's displayed.
- * Unrecognized fields or unparsable values are left as pure correction-log
- * entries (no display surface reads them, so there's nothing to apply).
+ * Writes the human's answer onto the Part.
+ *
+ * This used to write onto the AiAnalysis row instead, which made display
+ * trivial and silently corrupted the correction dataset -- see the class
+ * comment on AiAnalysis. The prediction is now immutable; the answer lives
+ * here, and readers combine the two via effectiveCondition().
+ *
+ * Returns whether anything was applied, so an unrecognized field or an
+ * unparsable value stays a pure correction-log entry (no display surface
+ * reads it) rather than stamping a bogus authorship onto the part.
  */
 function applyCorrection(
-  analysis: AiAnalysis,
+  part: Part,
   field: string,
   correctedValue: string,
-): void {
+): boolean {
   switch (field) {
     case 'grade':
       if ((Object.values(AiGrade) as string[]).includes(correctedValue)) {
-        analysis.grade = correctedValue as AiGrade;
+        part.finalGrade = correctedValue as AiGrade;
+        return true;
       }
-      break;
+      return false;
     case 'confidence': {
       const parsed = Number(correctedValue);
       if (!Number.isNaN(parsed)) {
-        analysis.confidence = parsed;
+        part.finalConfidence = parsed;
+        return true;
       }
-      break;
+      return false;
     }
     case 'damage_codes': {
       try {
@@ -53,15 +73,16 @@ function applyCorrection(
           Array.isArray(parsed) &&
           parsed.every((v) => typeof v === 'string')
         ) {
-          analysis.damageCodes = parsed;
+          part.finalDamageCodes = parsed;
+          return true;
         }
       } catch {
-        // Not valid JSON -- leave the AI's damage codes as-is.
+        // Not valid JSON -- leave the resolved condition as it was.
       }
-      break;
+      return false;
     }
     default:
-      break;
+      return false;
   }
 }
 
@@ -78,12 +99,20 @@ export class CorrectionsService {
     correctedValue: string,
   ): Promise<HumanCorrection> {
     return withTenantContext(this.dataSource, tenantId, async (manager) => {
-      const analysisRepo = manager.getRepository(AiAnalysis);
-      const analysis = await analysisRepo.findOne({
-        where: { id: aiAnalysisId },
-      });
+      const analysis = await manager
+        .getRepository(AiAnalysis)
+        .findOne({ where: { id: aiAnalysisId } });
       if (!analysis) {
         throw new NotFoundException('AI analysis not found');
+      }
+
+      const partRepo = manager.getRepository(Part);
+      const part = await partRepo.findOne({ where: { id: analysis.partId } });
+      if (!part) {
+        // The analysis FK cascades from parts, so this is unreachable in
+        // practice -- but reading through a null here would be a 500 on
+        // what is really a not-found.
+        throw new NotFoundException('Part not found for this AI analysis');
       }
 
       const correction = await manager.getRepository(HumanCorrection).save(
@@ -91,15 +120,22 @@ export class CorrectionsService {
           tenantId,
           aiAnalysisId,
           field,
-          originalValue: originalValueFor(analysis, field),
+          originalValue: originalValueFor(
+            effectiveCondition(part, analysis),
+            field,
+          ),
           correctedValue,
           correctedByUserId: userId,
         }),
       );
 
-      applyCorrection(analysis, field, correctedValue);
-      await analysisRepo.save(analysis);
+      if (applyCorrection(part, field, correctedValue)) {
+        part.conditionSetByUserId = userId;
+        part.conditionSetAt = new Date();
+        await partRepo.save(part);
+      }
 
+      // AiAnalysis is deliberately NOT saved here. It is append-only.
       return correction;
     });
   }

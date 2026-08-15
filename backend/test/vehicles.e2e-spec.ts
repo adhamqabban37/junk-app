@@ -228,4 +228,74 @@ describe('Vehicles (e2e)', () => {
       .set('Authorization', `Bearer ${token}`)
       .expect(404);
   });
+
+  describe('PATCH /vehicles/:id', () => {
+    it('saves the manager-entered acquisition and location details', async () => {
+      const token = await loginManager();
+
+      await request(app.getHttpServer())
+        .patch(`/vehicles/${vehicleA.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          odometerMiles: 142000,
+          acquisitionCost: 850.5,
+          acquisitionSource: 'Copart lot 44812',
+          acquisitionDate: '2026-08-01',
+          locationCode: 'Row 12 / Sp 8',
+        })
+        .expect(200);
+
+      const saved = await withTenantContext(dataSource, tenant.id, (m) =>
+        m.getRepository(Vehicle).findOneOrFail({ where: { id: vehicleA.id } }),
+      );
+      expect(saved.odometerMiles).toBe(142000);
+      expect(Number(saved.acquisitionCost)).toBe(850.5);
+      expect(saved.acquisitionSource).toBe('Copart lot 44812');
+      expect(saved.locationCode).toBe('Row 12 / Sp 8');
+    });
+
+    // Partial means partial. A manager saving only the location must not
+    // blank the acquisition cost somebody else entered -- that is real money
+    // data, and silently losing it would be worse than rejecting the write.
+    it('leaves fields the caller did not send untouched', async () => {
+      const token = await loginManager();
+
+      await request(app.getHttpServer())
+        .patch(`/vehicles/${vehicleA.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ locationCode: 'Row 3 / Sp 1' })
+        .expect(200);
+
+      const saved = await withTenantContext(dataSource, tenant.id, (m) =>
+        m.getRepository(Vehicle).findOneOrFail({ where: { id: vehicleA.id } }),
+      );
+      expect(saved.locationCode).toBe('Row 3 / Sp 1');
+      expect(saved.odometerMiles).toBe(142000);
+      expect(Number(saved.acquisitionCost)).toBe(850.5);
+    });
+
+    it('rejects a worker (acquisition cost is manager/owner only)', async () => {
+      const login = await request(app.getHttpServer())
+        .post('/auth/login/pin')
+        .send({ tenantId: tenant.id, userId: worker.id, pin: WORKER_PIN })
+        .expect(200);
+      const workerToken = (login.body as { accessToken: string }).accessToken;
+
+      await request(app.getHttpServer())
+        .patch(`/vehicles/${vehicleA.id}`)
+        .set('Authorization', `Bearer ${workerToken}`)
+        .send({ acquisitionCost: 1 })
+        .expect(403);
+    });
+
+    it('rejects a negative odometer reading', async () => {
+      const token = await loginManager();
+
+      await request(app.getHttpServer())
+        .patch(`/vehicles/${vehicleA.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ odometerMiles: -5 })
+        .expect(400);
+    });
+  });
 });

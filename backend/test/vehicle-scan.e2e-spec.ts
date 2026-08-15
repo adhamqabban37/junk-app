@@ -347,6 +347,42 @@ describe('Vehicle scan (e2e)', () => {
     expect(fakeGemini.analyzePartImage).not.toHaveBeenCalled();
   });
 
+  // The real test of the AddGradeD migration: the ai_grade Postgres enum
+  // has to accept 'D', not just the TypeScript union.
+  it('persists a D grade for a severely damaged part', async () => {
+    fakeGemini.detectPartsInImage.mockResolvedValue({
+      detections: [
+        {
+          part_name: 'front bumper',
+          grade: 'D',
+          damage_codes: ['broken', 'dent'],
+          confidence: 0.91,
+        },
+      ],
+      image_quality: { clarity: 'clear', note: '' },
+    });
+
+    const vehicle = await seedVehicle(vin('SCAND'));
+    const token = await loginManager();
+
+    await request(app.getHttpServer())
+      .post(`/vehicles/${vehicle.id}/scan`)
+      .set('Authorization', `Bearer ${token}`)
+      .attach('files', JPEG, 'wrecked.jpg')
+      .expect(201);
+
+    await withTenantContext(dataSource, tenant.id, async (m) => {
+      const parts = await m
+        .getRepository(Part)
+        .find({ where: { vehicleId: vehicle.id } });
+      const analysis = await m
+        .getRepository(AiAnalysis)
+        .findOne({ where: { partId: parts[0].id } });
+      expect(analysis!.grade).toBe('D');
+      expect(analysis!.damageCodes).toEqual(['broken', 'dent']);
+    });
+  });
+
   it('reuses existing parts instead of duplicating them on a re-scan', async () => {
     fakeGemini.detectPartsInImage.mockResolvedValue({
       detections: [

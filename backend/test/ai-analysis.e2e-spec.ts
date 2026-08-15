@@ -24,7 +24,7 @@ const MODEL_VERSION = 'gemini-2.0-flash';
 
 class FakeGeminiService {
   response: {
-    grade: 'A' | 'B' | 'C';
+    grade: 'A' | 'B' | 'C' | 'D';
     damage_codes: string[];
     confidence: number;
   } | null = {

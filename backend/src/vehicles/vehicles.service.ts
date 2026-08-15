@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Queue } from 'bullmq';
-import { DataSource, FindOptionsWhere, In } from 'typeorm';
+import { DataSource, EntityManager, FindOptionsWhere, In } from 'typeorm';
 import {
   AI_ANALYSIS_QUEUE,
   AiAnalysisJobData,
@@ -29,6 +29,8 @@ import { Tenant } from '../database/entities/tenant.entity';
 import { withTenantContext } from '../database/tenant-context';
 import { LocalFileStorage } from '../storage/local-file-storage';
 import { DetectPartsService } from '../ai/detect-parts.service';
+import { SCENE_DETECTION_PROMPT_VERSION } from '../ai/gemini.service';
+import { UpdateVehicleDto } from './dto/update-vehicle.dto';
 import { deriveRoster } from './vin-parts-roster';
 
 export interface VehicleListItem extends Vehicle {
@@ -206,6 +208,101 @@ export class VehiclesService {
       throw new BadRequestException('parts must be an array');
     }
 
+    return this.intakeInTenantContext(
+      tenantId,
+      draftId,
+      vin,
+      decoded,
+      parts,
+      files,
+    );
+  }
+
+  /**
+   * Claims this tenant's next stock number, atomically.
+   *
+   * `UPDATE ... RETURNING` rather than reading the counter and writing it
+   * back: the read-modify-write version races two concurrent intakes into
+   * the same number, and the unique index would then fail one of them at
+   * random. The statement takes a row lock on the tenant for the rest of the
+   * transaction, so intakes for one tenant serialize here -- fine, since
+   * intake is a human photographing a car, not a hot path.
+   *
+   * In Postgres, RETURNING sees the NEW row, so `next_stock_number - 1` is
+   * the value this call just claimed.
+   */
+  private async issueStockNumber(
+    manager: EntityManager,
+    tenantId: string,
+  ): Promise<string> {
+    const tenantRepo = manager.getRepository(Tenant);
+
+    // increment() emits `SET next_stock_number = next_stock_number + 1`,
+    // which takes the row lock. A concurrent intake for this tenant blocks
+    // here until we commit and then re-reads the committed value, so two
+    // callers can never claim the same number. The read below is inside the
+    // same transaction, so it sees our own write.
+    await tenantRepo.increment({ id: tenantId }, 'nextStockNumber', 1);
+
+    const tenant = await tenantRepo.findOne({ where: { id: tenantId } });
+    if (!tenant) {
+      throw new NotFoundException('Tenant not found');
+    }
+    return String(tenant.nextStockNumber - 1);
+  }
+
+  /**
+   * Partial update of the manager-entered facts on a vehicle.
+   *
+   * Only keys actually present in the payload are written, so a caller
+   * sending just `locationCode` cannot silently blank an odometer reading
+   * someone else entered. `null` is a real value here (clear the field);
+   * absent is not.
+   */
+  async updateDetails(
+    tenantId: string,
+    vehicleId: string,
+    changes: UpdateVehicleDto,
+  ): Promise<Vehicle> {
+    return withTenantContext(this.dataSource, tenantId, async (manager) => {
+      const repo = manager.getRepository(Vehicle);
+      const vehicle = await repo.findOne({ where: { id: vehicleId } });
+      if (!vehicle) {
+        throw new NotFoundException('Vehicle not found');
+      }
+
+      // Written out per field rather than looped over a key list: a loop
+      // needs a cast to index the entity, and that cast is exactly what
+      // would stop the compiler noticing if a DTO field were renamed or
+      // retyped later.
+      if (changes.odometerMiles !== undefined) {
+        vehicle.odometerMiles = changes.odometerMiles ?? null;
+      }
+      if (changes.acquisitionCost !== undefined) {
+        vehicle.acquisitionCost = changes.acquisitionCost ?? null;
+      }
+      if (changes.acquisitionSource !== undefined) {
+        vehicle.acquisitionSource = changes.acquisitionSource ?? null;
+      }
+      if (changes.acquisitionDate !== undefined) {
+        vehicle.acquisitionDate = changes.acquisitionDate ?? null;
+      }
+      if (changes.locationCode !== undefined) {
+        vehicle.locationCode = changes.locationCode ?? null;
+      }
+
+      return repo.save(vehicle);
+    });
+  }
+
+  private async intakeInTenantContext(
+    tenantId: string,
+    draftId: string,
+    vin: string,
+    decoded: IntakeDecodedInput | null | undefined,
+    parts: IntakePartInput[],
+    files: Express.Multer.File[],
+  ): Promise<{ vehicleId: string }> {
     return withTenantContext(this.dataSource, tenantId, async (manager) => {
       const vehicleRepo = manager.getRepository(Vehicle);
       const existing = await vehicleRepo.findOne({
@@ -215,10 +312,16 @@ export class VehiclesService {
         return { vehicleId: existing.id };
       }
 
+      // Deliberately after the idempotency check: a retried sync returns the
+      // vehicle it already created and must not burn a second stock number,
+      // which would leave a permanent gap in the yard's series.
+      const stockNumber = await this.issueStockNumber(manager, tenantId);
+
       const vehicle = await vehicleRepo.save(
         vehicleRepo.create({
           tenantId,
           intakeDraftId: draftId,
+          stockNumber,
           vin,
           make: decoded?.make ?? null,
           model: decoded?.model ?? null,
@@ -311,6 +414,7 @@ export class VehiclesService {
                 partId: part.id,
                 partImageId: partImage.id,
                 modelVersion: this.detectionModelVersion,
+                promptVersion: SCENE_DETECTION_PROMPT_VERSION,
                 rawJson: {
                   grade: detection.grade,
                   damage_codes: detection.damageCodes ?? [],
@@ -718,6 +822,7 @@ export class VehiclesService {
               partId: part.id,
               partImageId: partImage.id,
               modelVersion: this.detectionModelVersion,
+              promptVersion: SCENE_DETECTION_PROMPT_VERSION,
               rawJson: {
                 grade: detection.grade,
                 damage_codes: detection.damageCodes,

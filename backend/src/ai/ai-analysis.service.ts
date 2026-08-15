@@ -10,7 +10,7 @@ import { Part, PartStatus } from '../database/entities/part.entity';
 import { PartImage } from '../database/entities/part-image.entity';
 import { withTenantContext } from '../database/tenant-context';
 import { LocalFileStorage } from '../storage/local-file-storage';
-import { GeminiService } from './gemini.service';
+import { GeminiService, PART_GRADING_PROMPT_VERSION } from './gemini.service';
 
 @Injectable()
 export class AiAnalysisService {
@@ -62,6 +62,7 @@ export class AiAnalysisService {
           partId: partImage.partId,
           partImageId,
           modelVersion: this.modelVersion,
+          promptVersion: PART_GRADING_PROMPT_VERSION,
           rawJson: analysis,
           grade: analysis.grade as AiGrade,
           damageCodes: analysis.damage_codes,

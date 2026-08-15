@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { PartTaxonomy } from '../database/entities';
-import { GeminiService } from './gemini.service';
+import { GeminiRequestError, GeminiService } from './gemini.service';
 import { sniffImageMime } from './image-type';
 import { TaxonomyMatcher } from './taxonomy-matcher';
 
@@ -14,7 +14,7 @@ export interface DetectedPart {
   taxonomyName: string | null;
   /** Populated when ambiguous (>1) so the UI can offer just those choices. */
   candidateIds: string[];
-  grade: 'A' | 'B' | 'C';
+  grade: 'A' | 'B' | 'C' | 'D';
   damageCodes: string[];
   confidence: number;
 }
@@ -115,7 +115,15 @@ export class DetectPartsService {
           images[index] = {
             index,
             detections: [],
-            error: 'Could not analyze this photo',
+            // "The AI is busy" and "this photo is unreadable" are different
+            // instructions -- retry vs retake. Telling a worker to retake a
+            // perfectly good photo during an upstream outage sends them to
+            // do pointless work at the vehicle.
+            error:
+              outcome.reason instanceof GeminiRequestError &&
+              outcome.reason.retryable
+                ? 'The AI is busy right now — try again in a moment'
+                : 'Could not analyze this photo',
           };
           return;
         }

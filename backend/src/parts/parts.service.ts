@@ -7,14 +7,40 @@ import {
   AI_ANALYSIS_QUEUE,
   AiAnalysisJobData,
 } from '../ai/ai-analysis.processor';
-import { AiAnalysis } from '../database/entities/ai-analysis.entity';
+import { AiAnalysis, AiGrade } from '../database/entities/ai-analysis.entity';
 import { Part, PartStatus } from '../database/entities/part.entity';
 import { PartImage } from '../database/entities/part-image.entity';
 import { PartTaxonomy } from '../database/entities/part-taxonomy.entity';
 import { Vehicle } from '../database/entities/vehicle.entity';
 import { withTenantContext } from '../database/tenant-context';
 import { toCsv } from './csv';
+import { effectiveCondition } from './effective-condition';
 import { LocalFileStorage } from '../storage/local-file-storage';
+
+/**
+ * The condition fields every part-facing projection exposes. Split out so
+ * list(), detail() and the CSV export cannot drift in how they combine the
+ * human's answer with the AI's prediction.
+ */
+function conditionFields(
+  part: Part,
+  analysis: AiAnalysis | null,
+): {
+  grade: AiGrade | null;
+  damageCodes: string[];
+  confidence: number | null;
+  gradeSource: string;
+  damageCodesSource: string;
+} {
+  const resolved = effectiveCondition(part, analysis);
+  return {
+    grade: resolved.grade,
+    damageCodes: resolved.damageCodes,
+    confidence: resolved.confidence,
+    gradeSource: resolved.gradeSource,
+    damageCodesSource: resolved.damageCodesSource,
+  };
+}
 
 export interface PartListResult {
   items: PartListItem[];
@@ -37,11 +63,16 @@ export interface PartListItem {
     year: number | null;
   } | null;
   photosCount: number;
+  /** Ordered oldest-first, so [0] is the photo the first grade came from. */
+  photoIds: string[];
   latestAnalysis: {
     id: string;
     grade: string | null;
     damageCodes: string[];
     confidence: number | string | null;
+    /** 'human' once a manager has ruled on the field, else 'ai'/'none'. */
+    gradeSource: string;
+    damageCodesSource: string;
     status: string;
   } | null;
 }
@@ -151,15 +182,18 @@ export class PartsService {
             order: { createdAt: 'DESC' },
           })
         : [];
-      const photoCounts = partIds.length
-        ? await manager
-            .getRepository(PartImage)
-            .createQueryBuilder('img')
-            .select('img.partId', 'partId')
-            .addSelect('COUNT(*)', 'count')
-            .where('img.partId IN (:...partIds)', { partIds })
-            .groupBy('img.partId')
-            .getRawMany<{ partId: string; count: string }>()
+      // Ids, not just a COUNT. The Review Queue is where a manager accepts
+      // or overrides an AI grade, and it had no way to show the photo that
+      // grade came from -- approving a grade you cannot see is not review.
+      // Selecting two columns for a page of parts is cheap, and it replaces
+      // a per-row detail fetch that would otherwise be needed to render one
+      // thumbnail.
+      const photoRows = partIds.length
+        ? await manager.getRepository(PartImage).find({
+            where: { partId: In(partIds) },
+            select: { id: true, partId: true },
+            order: { createdAt: 'ASC' },
+          })
         : [];
 
       const vehicleById = new Map(
@@ -174,9 +208,12 @@ export class PartsService {
           latestAnalysisByPart.set(analysis.partId, analysis);
         }
       }
-      const photoCountByPart = new Map(
-        photoCounts.map((c): [string, number] => [c.partId, Number(c.count)]),
-      );
+      const photoIdsByPart = new Map<string, string[]>();
+      for (const row of photoRows) {
+        const ids = photoIdsByPart.get(row.partId) ?? [];
+        ids.push(row.id);
+        photoIdsByPart.set(row.partId, ids);
+      }
 
       return {
         items: parts.map((part) =>
@@ -185,7 +222,7 @@ export class PartsService {
             vehicleById,
             taxonomyById,
             latestAnalysisByPart,
-            photoCountByPart,
+            photoIdsByPart,
           ),
         ),
         total,
@@ -200,7 +237,7 @@ export class PartsService {
     vehicleById: Map<string, Vehicle>,
     taxonomyById: Map<string, PartTaxonomy>,
     latestAnalysisByPart: Map<string, AiAnalysis>,
-    photoCountByPart: Map<string, number>,
+    photoIdsByPart: Map<string, string[]>,
   ): PartListItem {
     const vehicle = vehicleById.get(part.vehicleId);
     const taxonomy = taxonomyById.get(part.taxonomyId);
@@ -220,13 +257,19 @@ export class PartsService {
             year: vehicle.year,
           }
         : null,
-      photosCount: photoCountByPart.get(part.id) ?? 0,
+      photosCount: photoIdsByPart.get(part.id)?.length ?? 0,
+      photoIds: photoIdsByPart.get(part.id) ?? [],
+      // `id` and `status` stay the analysis's own -- `id` is what the UI
+      // POSTs corrections against, so it must keep pointing at a real
+      // AiAnalysis row. The condition fields are resolved through
+      // effectiveCondition() because a human's answer now lives on the Part
+      // rather than being written back onto the prediction; without this the
+      // Review Queue and Inventory would silently revert to showing the AI's
+      // original values after a correction.
       latestAnalysis: analysis
         ? {
             id: analysis.id,
-            grade: analysis.grade,
-            damageCodes: analysis.damageCodes,
-            confidence: analysis.confidence,
+            ...conditionFields(part, analysis),
             status: analysis.status,
           }
         : null,
@@ -281,6 +324,10 @@ export class PartsService {
       const analyses = await manager
         .getRepository(AiAnalysis)
         .find({ where: { partId }, order: { createdAt: 'DESC' } });
+      // Same resolution as list(): the row keeps the analysis's identity so
+      // the UI can still POST a correction against it, but the condition
+      // fields reflect the human's answer where one exists.
+      const latest = analyses[0] ?? null;
       return {
         id: part.id,
         status: part.status,
@@ -289,7 +336,9 @@ export class PartsService {
         taxonomyName: taxonomy?.name ?? null,
         vehicle,
         photos,
-        latestAnalysis: analyses[0] ?? null,
+        latestAnalysis: latest
+          ? { ...latest, ...conditionFields(part, latest) }
+          : null,
       };
     });
   }
@@ -367,6 +416,10 @@ export class PartsService {
         const vehicle = vehicleById.get(part.vehicleId);
         const taxonomy = taxonomyById.get(part.taxonomyId);
         const analysis = latestAnalysisByPart.get(part.id) ?? null;
+        // Export the condition the business actually claims, not the raw
+        // prediction -- a manager who corrected a grade before approving
+        // must see that grade leave the building, not the AI's original.
+        const condition = effectiveCondition(part, analysis);
         const title = [
           vehicle?.year,
           vehicle?.make,
@@ -375,17 +428,18 @@ export class PartsService {
         ]
           .filter((v) => v !== null && v !== undefined && v !== '')
           .join(' ');
-        const description = analysis
-          ? `Grade ${analysis.grade}. Damage: ${analysis.damageCodes.length ? analysis.damageCodes.join(', ') : 'none noted'}.`
-          : 'Not yet AI-graded.';
+        const description =
+          condition.grade !== null
+            ? `Grade ${condition.grade}. Damage: ${condition.damageCodes.length ? condition.damageCodes.join(', ') : 'none noted'}.`
+            : 'Not yet AI-graded.';
         return [
           part.id,
           vehicle?.vin ?? '',
           title,
           description,
-          analysis?.grade ?? '',
-          analysis?.damageCodes.join(';') ?? '',
-          analysis?.confidence != null ? String(analysis.confidence) : '',
+          condition.grade ?? '',
+          condition.damageCodes.join(';'),
+          condition.confidence != null ? String(condition.confidence) : '',
           part.status,
           '', // price placeholder -- real pricing logic is out of MVP scope
         ];

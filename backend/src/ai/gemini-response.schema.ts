@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 export const GeminiPartAnalysisSchema = z.object({
-  grade: z.enum(['A', 'B', 'C']),
+  grade: z.enum(['A', 'B', 'C', 'D']),
   damage_codes: z.array(z.string()),
   confidence: z.number().min(0).max(1),
 });
@@ -20,7 +20,7 @@ export type GeminiPartAnalysis = z.infer<typeof GeminiPartAnalysisSchema>;
  */
 export const GeminiPartDetectionSchema = z.object({
   part_name: z.string().min(1),
-  grade: z.enum(['A', 'B', 'C']),
+  grade: z.enum(['A', 'B', 'C', 'D']),
   damage_codes: z.array(z.string()),
   confidence: z.number().min(0).max(1),
 });
@@ -50,6 +50,48 @@ export const GeminiSceneDetectionSchema = z.object({
   detections: z.array(GeminiPartDetectionSchema),
   image_quality: GeminiImageQualitySchema.optional(),
 });
+
+/**
+ * Which side of the vehicle a walkaround photo shows.
+ *
+ * `unknown` is a first-class answer, not a failure. A worker can
+ * legitimately upload an interior shot, a VIN plate close-up, or a photo
+ * taken at a 45-degree corner where "front" and "left" are equally true.
+ * Forcing one of the four sides there would file the photo under a side it
+ * doesn't show, and the whole point of the angle is that a manager can
+ * later find the photo of the damage they're looking at.
+ *
+ * Note the enum is wider than `VehicleImageAngle` (front/rear/left/right)
+ * by exactly this one value: `unknown` never reaches the database, it is
+ * what routes a photo to the worker to resolve.
+ */
+export const GeminiVehicleAngleSchema = z.object({
+  angle: z.enum(['front', 'rear', 'left', 'right', 'unknown']),
+  confidence: z.number().min(0).max(1),
+  /** Short reason, shown to the worker when the angle needs confirming. */
+  note: z.string().optional(),
+});
+
+export type GeminiVehicleAngle = z.infer<typeof GeminiVehicleAngleSchema>;
+
+/**
+ * Angles for a whole walkaround, answered in one call.
+ *
+ * `index` is required and echoed back by the model rather than relying on
+ * array order: a model that returns nine entries for ten photos would
+ * otherwise silently shift every angle after the gap onto the wrong photo,
+ * which is precisely the failure that makes a worker distrust the feature.
+ * The caller matches on index and treats anything missing as unknown.
+ */
+export const GeminiVehicleAngleSetSchema = z.object({
+  images: z.array(
+    GeminiVehicleAngleSchema.extend({
+      index: z.number().int().min(0),
+    }),
+  ),
+});
+
+export type GeminiVehicleAngleSet = z.infer<typeof GeminiVehicleAngleSetSchema>;
 
 export type GeminiImageQuality = z.infer<typeof GeminiImageQualitySchema>;
 

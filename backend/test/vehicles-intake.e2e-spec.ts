@@ -418,4 +418,46 @@ describe('Vehicles intake (e2e)', () => {
     );
     expect(vehicles).toHaveLength(1);
   }, 15000);
+
+  it('issues a per-tenant stock number on intake', async () => {
+    const token = await loginWorker();
+    const draftId = `draft-stock-${Date.now()}`;
+
+    const res = await buildRequest(
+      token,
+      draftId,
+      `part-stock-${Date.now()}`,
+      'STOCKTESTVIN12345',
+    ).expect(201);
+
+    const vehicle = await withTenantContext(dataSource, tenant.id, (m) =>
+      m.getRepository(Vehicle).findOneOrFail({
+        where: { id: (res.body as { vehicleId: string }).vehicleId },
+      }),
+    );
+    expect(vehicle.stockNumber).toMatch(/^\d+$/);
+  }, 15000);
+
+  // A stock number is the yard's permanent handle for a car -- it gets
+  // printed on labels and quoted on the phone. A sync retried after a lost
+  // response must not burn a second one, or the series grows gaps that look
+  // like missing vehicles.
+  it('does not consume a second stock number when a draft is retried', async () => {
+    const token = await loginWorker();
+    const draftId = `draft-stock-retry-${Date.now()}`;
+    const partId = `part-stock-retry-${Date.now()}`;
+
+    const before = await dataSource
+      .getRepository(Tenant)
+      .findOneOrFail({ where: { id: tenant.id } });
+
+    await buildRequest(token, draftId, partId, 'STOCKRETRYVIN123').expect(201);
+    await buildRequest(token, draftId, partId, 'STOCKRETRYVIN123').expect(201);
+
+    const after = await dataSource
+      .getRepository(Tenant)
+      .findOneOrFail({ where: { id: tenant.id } });
+
+    expect(after.nextStockNumber).toBe(before.nextStockNumber + 1);
+  }, 20000);
 });

@@ -6,6 +6,7 @@ import {
   Get,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Query,
   Res,
@@ -28,6 +29,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { sniffImageMime } from '../ai/image-type';
 import { UserRole } from '../database/entities';
 import { ListVehiclesDto } from './dto/list-vehicles.dto';
+import { UpdateVehicleDto } from './dto/update-vehicle.dto';
 import { VehiclesService } from './vehicles.service';
 
 /**
@@ -115,6 +117,19 @@ export class VehiclesController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.vehiclesService.detail(user.tenantId, id);
+  }
+
+  // Manager/owner only: acquisition cost is commercially sensitive, and a
+  // worker on the yard floor has no reason to be editing what a car cost.
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.MANAGER, UserRole.OWNER)
+  @Patch(':id')
+  updateDetails(
+    @CurrentUser() user: JwtPayload,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: UpdateVehicleDto,
+  ) {
+    return this.vehiclesService.updateDetails(user.tenantId, id, body);
   }
 
   /**
