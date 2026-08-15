@@ -10,7 +10,7 @@ export type PartStatus =
 
 export interface PartLatestAnalysis {
   id: string;
-  grade: "A" | "B" | "C" | null;
+  grade: "A" | "B" | "C" | "D" | null;
   damageCodes: string[];
   confidence: number | string | null;
   status: "pending" | "complete" | "failed";
@@ -24,6 +24,7 @@ export interface PartListItem {
   taxonomyName: string | null;
   vehicle: { id: string; vin: string; make: string | null; model: string | null; year: number | null } | null;
   photosCount: number;
+  photoIds: string[];
   latestAnalysis: PartLatestAnalysis | null;
 }
 

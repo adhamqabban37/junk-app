@@ -19,6 +19,16 @@ vi.mock("@/lib/api/vehicles", () => ({
   deleteVehicle: vi.fn(),
 }));
 
+// PartPhoto fetches its own object URL through @/lib/api/parts, which this
+// file mocks wholesale -- so the real component throws here on a missing
+// export. Its rendering is its own concern; stub it, same as the Inventory
+// test does, and let this file test the queue's behaviour.
+vi.mock("@/components/desktop/part-photo", () => ({
+  PartPhoto: ({ imageId }: { imageId: string }) => (
+    <div data-testid={`part-photo-${imageId}`}>photo</div>
+  ),
+}));
+
 import { approvePart, listParts } from "@/lib/api/parts";
 import { getSettings } from "@/lib/api/settings";
 import { recordCorrection } from "@/lib/api/corrections";
@@ -32,6 +42,7 @@ function makePart(overrides: Partial<PartListItem> = {}): PartListItem {
     taxonomyId: "tax-1",
     taxonomyName: "Alternator",
     vehicle: { id: "v1", vin: "VIN1234567890123", make: "Honda", model: "Accord", year: 2005 },
+    photoIds: ["img-1"],
     photosCount: 1,
     latestAnalysis: {
       id: "part-1-analysis",

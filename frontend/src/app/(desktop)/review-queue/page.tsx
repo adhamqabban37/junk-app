@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { PartPhoto } from "@/components/desktop/part-photo";
 import { Button } from "@/components/ui/button";
 import { useAuthSession } from "@/lib/auth-session";
 import { approvePart, listParts, type PartListItem } from "@/lib/api/parts";
@@ -8,7 +9,9 @@ import { getSettings } from "@/lib/api/settings";
 import { recordCorrection } from "@/lib/api/corrections";
 import { deleteVehicle } from "@/lib/api/vehicles";
 
-const GRADES = ["A", "B", "C"] as const;
+// A = flawless, B = light cosmetic wear, C = damaged but usable,
+// D = severe. Rubric lives in GRADING_RUBRIC (backend ai/gemini.service.ts).
+const GRADES = ["A", "B", "C", "D"] as const;
 
 function needsReview(item: PartListItem, threshold: number): boolean {
   const analysis = item.latestAnalysis;
@@ -26,6 +29,12 @@ export default function ReviewQueuePage() {
   const [submittingId, setSubmittingId] = useState<string | null>(null);
   const [error, setError] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  /** Photo open full-size, or null. */
+  const [zoomed, setZoomed] = useState<{
+    partId: string;
+    imageId: string;
+    label: string;
+  } | null>(null);
   // Which row has its "delete this vehicle" confirmation open. Keyed by
   // part id (the row), though what gets deleted is that row's *vehicle*.
   const [confirmingPartId, setConfirmingPartId] = useState<string | null>(null);
@@ -149,6 +158,22 @@ export default function ReviewQueuePage() {
 
   return (
     <div className="flex flex-col gap-6">
+      {zoomed && token && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Photo graded for ${zoomed.label}`}
+          className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-black/90 p-8"
+          onClick={() => setZoomed(null)}
+        >
+          <div className="max-h-[80vh] [&_img]:max-h-[80vh] [&_img]:w-auto [&_img]:max-w-full">
+            <PartPhoto token={token} partId={zoomed.partId} imageId={zoomed.imageId} />
+          </div>
+          <p className="text-sm text-white">{zoomed.label}</p>
+          <p className="text-xs text-white/50">Click anywhere to close</p>
+        </div>
+      )}
+
       <h1 className="text-2xl font-semibold">Review queue</h1>
 
       {deleteError && (
@@ -185,6 +210,30 @@ export default function ReviewQueuePage() {
               onClick={() => setSelectedIndex(index)}
             >
               <div className="flex items-start justify-between gap-4">
+                {/* The photo the grade came from. This screen is the human
+                    gate on every AI grade (CLAUDE.md rule 5), and until now
+                    it showed a grade, a damage list and a confidence score
+                    with no image anywhere -- so approving was necessarily
+                    taking the model's word for it. Click to see it full
+                    size. */}
+                {token && item.photoIds.length > 0 && (
+                  <button
+                    type="button"
+                    aria-label={`View photo of ${item.taxonomyName ?? "this part"}`}
+                    className="shrink-0"
+                    onClick={() =>
+                      setZoomed({
+                        partId: item.id,
+                        imageId: item.photoIds[0],
+                        label: `${item.taxonomyName ?? "Part"} — Grade ${
+                          item.latestAnalysis?.grade ?? "—"
+                        }`,
+                      })
+                    }
+                  >
+                    <PartPhoto token={token} partId={item.id} imageId={item.photoIds[0]} />
+                  </button>
+                )}
                 <div>
                   <p className="font-medium">
                     {item.taxonomyName ?? "Part"}

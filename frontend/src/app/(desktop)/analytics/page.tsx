@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useAuthSession } from "@/lib/auth-session";
 import { getAnalytics, type AnalyticsSummary } from "@/lib/api/analytics";
 
-const GRADES = ["A", "B", "C"] as const;
+const GRADES = ["A", "B", "C", "D"] as const;
 
 function label(key: string): string {
   return key.replace(/_/g, " ");

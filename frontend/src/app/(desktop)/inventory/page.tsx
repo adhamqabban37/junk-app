@@ -8,7 +8,7 @@ import { useAuthSession } from "@/lib/auth-session";
 import { recordCorrection } from "@/lib/api/corrections";
 import { getPart, listParts, type PartDetail, type PartListItem, type PartStatus } from "@/lib/api/parts";
 
-const GRADES = ["A", "B", "C"] as const;
+const GRADES = ["A", "B", "C", "D"] as const;
 
 const STATUS_OPTIONS: { value: PartStatus | ""; label: string }[] = [
   { value: "", label: "All statuses" },
@@ -63,13 +63,13 @@ export default function InventoryPage() {
     try {
       await recordCorrection(token, selectedDetail.latestAnalysis.id, "grade", gradeDraft);
       setSelectedDetail((prev) =>
-        prev && prev.latestAnalysis ? { ...prev, latestAnalysis: { ...prev.latestAnalysis, grade: gradeDraft as "A" | "B" | "C" } } : prev,
+        prev && prev.latestAnalysis ? { ...prev, latestAnalysis: { ...prev.latestAnalysis, grade: gradeDraft as "A" | "B" | "C" | "D" } } : prev,
       );
       setItems((prev) =>
         prev
           ? prev.map((p) =>
               p.id === selectedDetail.id && p.latestAnalysis
-                ? { ...p, latestAnalysis: { ...p.latestAnalysis, grade: gradeDraft as "A" | "B" | "C" } }
+                ? { ...p, latestAnalysis: { ...p.latestAnalysis, grade: gradeDraft as "A" | "B" | "C" | "D" } }
                 : p,
             )
           : prev,
