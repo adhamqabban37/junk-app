@@ -80,11 +80,34 @@ describe("syncPendingDrafts", () => {
 });
 
 describe("registerSyncTriggers", () => {
+  const registered: Array<() => void> = [];
+
+  /**
+   * Registers triggers and guarantees teardown even if the test fails first.
+   *
+   * The regression this guards is a cascade, not a single flake: a failed
+   * assertion skips the `unregister()` at the end of a test body, leaving
+   * that test's store subscription — and its client — live for the rest of
+   * the file. The next test's `queueForSync` then raises the pending count,
+   * the stale subscription drains it with the *previous* test's client, and
+   * a test asserting `sync_failed` sees `synced` from a client it never
+   * created. Calling `unregister()` inside a test as well stays meaningful
+   * (the first test asserts on it directly) and is safe twice.
+   */
+  function register(client: SyncClient): () => void {
+    const unregister = registerSyncTriggers(client);
+    registered.push(unregister);
+    return unregister;
+  }
+
   beforeEach(() => {
     useIntakeStore.setState({ drafts: [], hydrated: false });
   });
 
   afterEach(async () => {
+    while (registered.length > 0) {
+      registered.pop()!();
+    }
     await _resetDbForTests();
     await new Promise<void>((resolve, reject) => {
       const req = indexedDB.deleteDatabase("junkyard-intake");
@@ -109,7 +132,7 @@ describe("registerSyncTriggers", () => {
     await useIntakeStore.getState().queueForSync(draft.id);
 
     const client: SyncClient = { syncDraft: vi.fn().mockResolvedValue(undefined) };
-    const unregister = registerSyncTriggers(client);
+    const unregister = register(client);
     expect(client.syncDraft).not.toHaveBeenCalled();
 
     setOnline(true);
@@ -130,7 +153,7 @@ describe("registerSyncTriggers", () => {
     await useIntakeStore.getState().queueForSync(draft.id);
 
     const client: SyncClient = { syncDraft: vi.fn().mockResolvedValue(undefined) };
-    const unregister = registerSyncTriggers(client);
+    const unregister = register(client);
 
     await vi.waitFor(() => {
       expect(client.syncDraft).toHaveBeenCalledTimes(1);
@@ -145,7 +168,7 @@ describe("registerSyncTriggers", () => {
     // press Finish and have nothing happen at all.
     setOnline(true);
     const client: SyncClient = { syncDraft: vi.fn().mockResolvedValue(undefined) };
-    const unregister = registerSyncTriggers(client);
+    const unregister = register(client);
 
     const draft = await useIntakeStore.getState().createDraft();
     expect(client.syncDraft).not.toHaveBeenCalled();
@@ -164,7 +187,7 @@ describe("registerSyncTriggers", () => {
     const client: SyncClient = {
       syncDraft: vi.fn().mockRejectedValue(new Error("network unreachable")),
     };
-    const unregister = registerSyncTriggers(client);
+    const unregister = register(client);
 
     const draft = await useIntakeStore.getState().createDraft();
     await useIntakeStore.getState().queueForSync(draft.id);
@@ -183,6 +206,6 @@ describe("registerSyncTriggers", () => {
 
   it("does not throw when the Background Sync API is unavailable (e.g. no service worker in this test environment)", () => {
     const client: SyncClient = { syncDraft: vi.fn() };
-    expect(() => registerSyncTriggers(client)).not.toThrow();
+    expect(() => register(client)).not.toThrow();
   });
 });
