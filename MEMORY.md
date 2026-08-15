@@ -84,6 +84,6 @@
 - **Architecture refinement phases 1 & 2 built and verified** (2026-08-12): `AiAnalysis` append-only + human condition on `Part`; `prompt_version` written; vehicle stock number / odometer / acquisition cost / location + `PATCH /vehicles/:id`. **D4 (part commercial fields + the status split) is the largest remaining before-customers migration.**
 - **Gemini calls are now resilient** (2026-08-15): per-attempt timeout, retry on capacity errors only, fallback to a second model alias. Angle classification (`POST /ai/classify-vehicle-photos`) and the review-queue photo shipped in the same batch.
 - Suites: backend **126 unit** (e2e **103**, not re-run since 08-12 — needs Docker), frontend **235**. `tsc` clean both sides, eslint 0 errors, 6 migrations applied.
-- **Working tree committed 2026-08-15, still nothing pushed.** 21 commits sit on `feat/intake-endpoint-and-inventory-editing` and exist only on this laptop. This is the largest single risk on the project.
+- **Committed and pushed 2026-08-15.** 23 commits on `feat/intake-endpoint-and-inventory-editing`, now on the remote — the long-standing "exists only on one laptop" risk is closed. No PR open; `main` has not moved since the branch was cut.
 - **Backend e2e is still not reliable**: the BullMQ teardown race is fixed, but the native `0xC0000409` crash remains at ~1 run in 3 (reproduced again 2026-08-12). CI keeps `continue-on-error`.
 - See `docs/PROGRESS.md` → "▶ START HERE" for the current ordered next steps.

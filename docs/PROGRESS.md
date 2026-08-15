@@ -4,7 +4,7 @@ Tracks completion against `docs/BUILD_PLAN.md`. Check boxes as each phase's acce
 
 ## ▶ START HERE (handoff, 2026-08-15)
 
-**The working tree is committed.** Everything the 2026-08-12 handoff listed as uncommitted is now in git, in 6 commits, plus 3 chunks that handoff never mentioned (below). Branch `feat/intake-endpoint-and-inventory-editing` is **21 commits ahead of `main` and still nothing is pushed.** Remote is configured (`github.com/adhamqabban37/junk-app.git`).
+**The working tree is committed and pushed.** Everything the 2026-08-12 handoff listed as uncommitted is now in git, in 6 commits, plus 3 chunks that handoff never mentioned (below). Branch `feat/intake-endpoint-and-inventory-editing` is **23 commits ahead of `main` and now on the remote** (`github.com/adhamqabban37/junk-app.git`) — the long-standing "this exists only on one laptop" risk is closed. **No PR is open yet**; nothing has been merged to `main`.
 
 ### The commits (2026-08-15)
 
@@ -33,9 +33,9 @@ Tracks completion against `docs/BUILD_PLAN.md`. Check boxes as each phase's acce
 The e2e run was clean this time, which proves nothing on its own — the native crash (`0xC0000409`) is ~1 run in 3 and a single green run has never been evidence here. CI stays `continue-on-error`. E2E needs Docker: `npm run db:up` first.
 
 ### Then, in rough order
-1. **Decide about pushing** — 22 commits still exist only on this laptop.
-2. **Price.** Still a hardcoded `''` in `parts.service.ts`. Mandatory for Car-Part.com, and the only Phase-1 item that does **not** depend on the NDA'd spec.
-3. **Start the Car-Part.com recycler registration + NDA.** It is days of latency and zero code, and it blocks nothing else in the meantime.
+1. **Price.** Still a hardcoded `''` in `parts.service.ts`. Mandatory for Car-Part.com, and the only Phase-1 item that does **not** depend on the NDA'd spec. Highest-value work available.
+2. **Start the Car-Part.com recycler registration + NDA.** It is days of latency and zero code, and it blocks nothing else in the meantime.
+3. **Decide whether this branch becomes a PR into `main`.** It is 23 commits and the whole project's work to date; `main` has not moved since it was cut.
 4. **D4 — the largest remaining before-customers migration**: part commercial fields (`inventory_number`, `list_price`, `core_charge`, `grade_basis`, `location_code`) and the **status split** into `review_status` / `physical_status` / `commercial_status`. Cheap now against 23 dev parts; a real data migration once a customer has thousands.
 5. **UI for the Phase 2 fields.** The backend holds odometer / acquisition cost / location and `PATCH /vehicles/:id` sets them; no screen shows them yet. Small: a form on `(desktop)/vehicles/[vehicleId]`.
 6. **Finish the phone walkthrough** — intake → parts → scan → Finish → sync → Review Queue. Still never completed on a real device, and the angle-classification UI has never been used in a browser either.
