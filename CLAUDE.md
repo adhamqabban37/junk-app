@@ -9,6 +9,14 @@ An AI-native "Sidecar Application" designed to eliminate manual data entry in sa
 - **Database:** PostgreSQL + pgvector + RLS.
 - **AI:** Gemini 3.5 Flash / 3.1 Flash-Lite.
 - **Data:** NHTSA VIN API (MVP) $\rightarrow$ MarketCheck/ACES (Later).
+- **Syndication:** **Car-Part.com is the Phase 1 publishing target** (moved up from Phase 2 on 2026-08-12). eBay/Shopify are Phase 2.
+
+## Car-Part.com — read before touching export, grading, or damage codes
+- **The upload spec is behind an NDA.** Recycler registration + NDA is what releases it. **Never write the exporter against a guessed format.**
+- **Interchange numbers are required** — Car-Part's search matches on them, so a part without one is unfindable. Sourced from Car-Part Interchange, *not* Hollander. This reverses ARCHITECTURE.md §5's old "avoid Hollander early" line. Interchange is **not** full fitment; ACES/OEM stays deferred.
+- **Their standards win at the export boundary:** ARA damage codes (location + type + repair-hours) and ARA grades **A/B/C**. Our internal rubric has a fourth grade, **D** — it must map at the boundary or be dropped. Free-text damage strings must map to ARA codes.
+- **Price is now mandatory**, not the placeholder it has always been (`parts.service.ts:390`).
+- Full reasoning: MEMORY.md 2026-08-12 entry; scope and open questions: `docs/PROGRESS.md` 2026-08-12 section.
 
 ## Development Rules
 1. **TDD First:** No production code without a failing test.
@@ -16,7 +24,9 @@ An AI-native "Sidecar Application" designed to eliminate manual data entry in sa
 3. **Strict Multi-tenancy:** Every database query must be scoped by `tenant_id` via PostgreSQL RLS.
 4. **Non-Blocking AI:** All LLM calls must be handled by BullMQ workers.
 5. **Human-in-the-Loop:** AI outputs are "suggestions" until approved by a human. In the bulk photo-scan flow the confirming human is the **worker on the phone** (they can see the vehicle); everywhere else it's the manager. Ambiguous or unrecognized detections are surfaced for a person to resolve — never auto-assigned, never silently dropped.
-6. **The Moat:** Always log human corrections to AI predictions for future training data.
+6. **The Moat:** Always log human corrections to AI predictions for future training data. **`AiAnalysis` is append-only — never update a row there.** A human's answer goes on `Part.final*`; readers combine the two via `parts/effective-condition.ts`. Mutating an analysis corrupts the training context of every `HumanCorrection` joined to it.
+6a. **Migrations that touch data on a tenant-scoped table must set tenant context per tenant.** `FORCE ROW LEVEL SECURITY` binds the table owner too, so a migration with no `app.tenant_id` sees an **empty table** and its `UPDATE` silently changes zero rows. Never `DISABLE ROW LEVEL SECURITY` to work around it. See `1786330000000-AddVehicleIdentityAndAcquisition.ts`.
+6b. **Canonical inventory is never designed around a marketplace.** Internal grades, damage vocabulary and part naming stay ours; conversion to any external standard happens in an export adapter. This is what lets Car-Part.com integration wait for its actual spec.
 7. **The Planning Gate:** Before any implementation phase begins, the la-plan must undergo a G-Stack Review Gauntlet (CEO, Engineering, Design, and DX reviews) to identify edge cases and product gaps.
 
 ## Project Structure

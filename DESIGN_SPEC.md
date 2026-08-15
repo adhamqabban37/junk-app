@@ -15,7 +15,7 @@ The platform is distributed across two distinct presentation layers:
 | Architecture Layer | Target Persona | Primary Environment | Core Technologies | Key Responsibilities |
 | :--- | :--- | :--- | :--- | :--- |
 | **Mobile PWA** | Field Worker / Dismantler | Salvage Yard, Offline, Outdoors | Next.js, IndexedDB, Workbox, ImageCapture API, Zustand | VIN capture, guided photo acquisition, offline queueing, edge validation. |
-| **Desktop Dashboard** | QA Manager / Sales | Office, High-Speed Internet, Multi-Monitor | Next.js, React Query, Tailwind CSS, shadcn/ui | AI result verification, Hollander mapping, market pricing, eBay syndication. |
+| **Desktop Dashboard** | QA Manager / Sales | Office, High-Speed Internet, Multi-Monitor | Next.js, React Query, Tailwind CSS, shadcn/ui | AI result verification, interchange mapping, market pricing, Car-Part.com syndication. |
 
 ## 3. Complete Screen Inventory
 
@@ -160,12 +160,13 @@ AI results are presented as an augmentative layer:
 - **Validation:** Gemini API `response_mime_type: "application/json"` validated via **Zod** schemas.
 
 ## 9. User Flows
-- **Happy Path:** Login $\rightarrow$ Scan VIN $\rightarrow$ 4 Exterior Photos $\rightarrow$ Select Part $\rightarrow$ Guided Photos $\rightarrow$ Save $\rightarrow$ Background Sync $\rightarrow$ AI Processing $\rightarrow$ Manager Review $\rightarrow$ eBay Listing.
+- **Happy Path:** Login $\rightarrow$ Scan VIN $\rightarrow$ 4 Exterior Photos $\rightarrow$ Select Part $\rightarrow$ Guided Photos $\rightarrow$ Save $\rightarrow$ Background Sync $\rightarrow$ AI Processing $\rightarrow$ Manager Review $\rightarrow$ **Car-Part.com Listing**.
 - **Offline Path:** 0 bars signal $\rightarrow$ Manual VIN Entry $\rightarrow$ Part Photos $\rightarrow$ Local IndexedDB Save $\rightarrow$ "1 Item Pending Sync" $\rightarrow$ WiFi Detection $\rightarrow$ Automatic Upload.
 
 ## 10. MVP Implementation Plan
 - **Build First (Months 1-2):** PWA Setup, Mobile Intake Flow (VIN/Camera), Offline Queue (Zustand/IndexedDB), Basic Gemini integration, Desktop Review Skeleton.
-- **Build Later (Months 3-4):** eBay Motors API, Hollander Interchange mapping, Laplacian Blur detection, Manager Analytics.
+- **Build Later (Months 3-4):** **Car-Part.com syndication** (interchange mapping, ARA damage codes, pricing — see PRODUCT_SPEC Phase 1), Laplacian Blur detection, Manager Analytics. eBay Motors API moves to Phase 2.
+  - *Revised 2026-08-12.* This line previously read "Hollander Interchange mapping" and contradicted ARCHITECTURE.md §5's "avoid Hollander early". Resolved: interchange **is** needed, but sourced from **Car-Part Interchange** via the recycler agreement, not Hollander.
 - **Post-MVP:** Custom YOLO/SAM models, Predictive Pricing, Vector Search.
 
 ## 11. AI Coding Instructions

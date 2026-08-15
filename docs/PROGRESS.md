@@ -2,6 +2,205 @@
 
 Tracks completion against `docs/BUILD_PLAN.md`. Check boxes as each phase's acceptance criteria are verified.
 
+## ▶ START HERE (handoff, 2026-08-15)
+
+**The working tree is committed.** Everything the 2026-08-12 handoff listed as uncommitted is now in git, in 6 commits, plus 3 chunks that handoff never mentioned (below). Branch `feat/intake-endpoint-and-inventory-editing` is **21 commits ahead of `main` and still nothing is pushed.** Remote is configured (`github.com/adhamqabban37/junk-app.git`).
+
+### The commits (2026-08-15)
+
+| Commit | Contents |
+|---|---|
+| `cf74705` | `allowedDevOrigins` — a phone on the LAN can load the dev server at all |
+| `673e809` | `sync.test.ts` teardown leak, moved to `afterEach` |
+| `48f42ca` | **Backend architecture refinement** — `AiAnalysis` append-only, `Part.final*`, `prompt_version`, vehicle identity/acquisition, `PATCH /vehicles/:id`, Grade D, 3 migrations |
+| `e6c58ea` | **`POST /ai/classify-vehicle-photos`** — sorts a walkaround drop into front/rear/left/right |
+| `3fb3bf5` | **Review queue shows the photo a grade came from**, + Grade D on the manager screens |
+| `04a0fc6` | **`randomId`** (LAN-safe ids) + the mobile angle-classification UI |
+
+**Three chunks were in the tree that the last handoff did not list**, so they had no writeup anywhere until now — see the 2026-08-15 section below: angle classification, the review-queue photo, and a retry/timeout path on every Gemini request.
+
+**Why 6 commits and not 9.** `gemini.service.ts` and `ai-analysis.entity.ts` are each touched by three separate chunks, interleaved. Splitting them per chunk would have needed hunk surgery and produced commits that do not compile. Each commit here is coherent and buildable, and the messages name what they carry.
+
+### Current verified state (2026-08-15)
+| Suite | Count | |
+|---|---|---|
+| Backend unit | **126 / 9 suites** | ✅ green |
+| Frontend | **235 / 39 files** | ✅ green |
+| Backend e2e | **103 / 18 suites** | ⚠️ **not run** — Docker daemon was down, no Postgres/Redis |
+
+`tsc --noEmit` clean both sides. eslint **0 errors** (136 backend warnings, 1 frontend — both pre-existing; a stray unused `useRef` import was removed).
+
+**Backend e2e has not been run since 2026-08-12.** Start Docker Desktop, `npm run db:up`, then `npm run test:e2e --workspace=backend` before trusting it. Note that the native crash (`0xC0000409`, ~1 run in 3) is still expected and CI stays `continue-on-error`.
+
+### Then, in rough order
+1. **Run backend e2e** (needs Docker), then **decide about pushing** — 21 commits still exist only on this laptop.
+2. **Price.** Still a hardcoded `''` in `parts.service.ts`. Mandatory for Car-Part.com, and the only Phase-1 item that does **not** depend on the NDA'd spec.
+3. **Start the Car-Part.com recycler registration + NDA.** It is days of latency and zero code, and it blocks nothing else in the meantime.
+4. **D4 — the largest remaining before-customers migration**: part commercial fields (`inventory_number`, `list_price`, `core_charge`, `grade_basis`, `location_code`) and the **status split** into `review_status` / `physical_status` / `commercial_status`. Cheap now against 23 dev parts; a real data migration once a customer has thousands.
+5. **UI for the Phase 2 fields.** The backend holds odometer / acquisition cost / location and `PATCH /vehicles/:id` sets them; no screen shows them yet. Small: a form on `(desktop)/vehicles/[vehicleId]`.
+6. **Finish the phone walkthrough** — intake → parts → scan → Finish → sync → Review Queue. Still never completed on a real device, and the angle-classification UI has never been used in a browser either.
+7. **Re-scan the Genesis to see the new rubric's real grades.** Live data is still **39 A / 4 B — zero C, zero D ever**, all from the *old* looser prompt. The strict "any visible defect disqualifies A" rule remains completely unmeasured against real photos.
+8. **Object storage**, then **the rest of pricing** — both Phase-1 blockers. See the Car-Part section below.
+
+### 🚪 One-way door that is still open
+`FIRST_STOCK_NUMBER = 1000` is now baked into real rows. Changing the stock-number scheme (prefix, per-yard series, different start) is **a single UPDATE today** and effectively impossible once a customer has issued numbers and printed them on labels. If it should be anything else, change it before commit 1.
+
+### Phone testing reference — the white-page trap, so nobody re-debugs it
+Next 16 **blocks cross-origin requests to dev resources**. A phone hitting the LAN IP gets the HTML and then every JS chunk is refused → **blank white page, no on-screen error**. The only evidence is one warning in the dev server's own log:
+
+> `⚠ Blocked cross-origin request to Next.js dev resource /_next/webpack-hmr from "192.168.1.26"`
+
+Fix is `allowedDevOrigins: ["192.168.1.26"]` in `next.config.ts` (dev-only, no effect on `next build`). **The IP is DHCP** — if it moves, update it in *two* places, `next.config.ts` **and** `frontend/.env.local`, then restart; `NEXT_PUBLIC_*` is inlined at startup.
+
+Also: the inbound firewall rule was **missing** despite being recorded as created on 2026-08-06. If the phone can't connect at all (as opposed to white page), run in an **elevated** shell:
+```powershell
+New-NetFirewallRule -DisplayName "Junkyard dev (3000,3001)" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 3000,3001 -Profile Private
+```
+
+### Live state at handoff
+Demo tenant has **1 vehicle** (the Genesis, now **stock number 1000**) with **23 parts, all `pending_review`** from the first real AI scan. `part_taxonomies` is **38 rows**, of which **5 are leaked test rows** (`Water Pump` ×2, `Tail Light` ×2, duplicate `Radiator`) from suites that still delete their tenant *before* their taxonomy row.
+
+Also visible now that the stock-number backfill queried across tenants: **the dev DB holds 8 leaked test tenants** (`Auth Test Tenant A/B`, two `Reopen Test Tenant`, two `Parts Test Tenant`, `Part Image File Test Tenant`, `Users Test Tenant`) carrying 5 leaked vehicles between them. Same structural cause as the taxonomy leak — a suite that crashes or throws before `afterAll` never cleans up. Harmless to the demo tenant (RLS keeps them apart) but worth a sweep.
+
+## 2026-08-15 — the working tree is committed, and three chunks get their first writeup
+
+The 2026-08-12 handoff listed six chunks in the working tree. There were nine. The three below were built and tested but appear in no session writeup, so this is their record. All of it was verified before commit: `tsc` clean both sides, backend **126** unit (the handoff said 115 — the extra 11 are these), frontend **235** (was 220), eslint 0 errors.
+
+### Every Gemini request now retries, times out, and falls back to a second model
+
+Previously one call, no ceiling, no second chance. Three problems, all observed rather than theorized:
+
+- **No per-attempt timeout.** An overloaded upstream call was measured hanging **43 seconds before returning a 503**, during which the worker stares at "Analyzing photos…" with no indication anything is wrong. `REQUEST_TIMEOUT_MS = 45_000` via `AbortSignal.timeout`, generous rather than tight — a vision call that is working returns in a few seconds.
+- **No retry.** 429 and 500/502/503/504 are capacity, not correctness. 503 ("this model is currently experiencing high demand") is the single most common failure this service sees and is explicitly temporary. 3 attempts, exponential backoff from `GEMINI_RETRY_BASE_MS` (500ms). **A malformed response or a bad request is never retried** — it fails identically however many times it is sent, so `GeminiRequestError` carries a `retryable` flag and only capacity and transport problems wait.
+- **No fallback model.** Google's aliases are load-balanced independently, so when one is saturated another is routinely fine — observed directly: `flash-latest` timing out while `flash-lite-latest` answered in **566ms**. `GEMINI_FALLBACK_MODEL` defaults to `gemini-flash-lite-latest` and is tried only after the primary exhausts its retries on a *retryable* failure. Unset it to disable.
+
+### `POST /ai/classify-vehicle-photos` — walkaround photos sort themselves
+
+A worker drops in the whole camera roll for the vehicle and the photos come back sorted front/rear/left/right instead of being tagged one by one.
+
+**Deliberately not one call per photo, unlike part detection.** "Which side of the car is this?" is far easier to answer about a *set* than about a single frame — the model can see that two photos share the same dent and are therefore the same side, and that the side without the fuel door is the other one. A model shown one close-up of a wheel arch in isolation is guessing, which is what it was doing before. Chunked at 12 rather than unbounded because images are base64-inlined into the request body; 12 keeps a typical 4–10 photo walkaround in one fully cross-referenced call. Side benefit: cost drops from one call per photo to one per chunk.
+
+**Stateless, exactly like `DetectPartsService` and for the same reason** — during intake the vehicle exists only as an IndexedDB draft, so there is no `Vehicle` row to attach to. Angles are applied to the draft client-side and reach the DB through the existing `POST /vehicles/intake`.
+
+**Never a guess.** Every photo starts `unknown`, so anything the model omits and any chunk that fails falls back to "a person sorts this" rather than to a wrong angle or a missing entry — and the worker is standing at the vehicle. An index outside the chunk is ignored rather than trusted; a hallucinated index would otherwise write an angle onto an unrelated photo. Cap is 24 images (higher than detect-parts' 12, because the bound here is "how many photos did they take walking round the car").
+
+### The review queue finally shows the photo the grade came from
+
+This screen is the human gate on every AI grade (CLAUDE.md rule 5), and it showed a grade, a damage list and a confidence number **with no image anywhere** — so approving was necessarily taking the model's word for it. Each row now shows the graded photo, click to open full size. This is the single largest gap between what that screen claimed to be and what it was.
+
+### Still open from this work
+- **None of the three has been used in a browser.** Same standing caveat as everything else on this project: live runs find what tests don't, every session so far.
+- **Retry changes the cost profile.** Three attempts across two models is up to 6 billed calls for one photo in the worst case. Un-analysed, like the rest of the cost question.
+
+## 2026-08-12 — Architecture refinement, phases 1 and 2
+
+Scoped deliberately as *"a small architectural improvement, not a new product"*: keep the AI inspection workflow, offline intake, correction moat, multi-tenancy and RLS exactly as they are, and add only the structure needed to make the thing commercially sellable. Full plan (A–F, including what was explicitly **not** built) is in the chat record; the decisions are in MEMORY.md.
+
+### Phase 1 — `AiAnalysis` is now append-only
+
+**The bug was invisible and was costing the moat every day it ran.** `CorrectionsService` wrote a manager's correction *onto the `AiAnalysis` row itself* so Inventory and the CSV export would show the corrected value. That worked for display. What it also did:
+
+- `human_corrections` joins back to `ai_analyses` for `model_version` and the confidence at prediction time. Mutating the analysis **corrupted the training context of every correction attached to it.**
+- A field corrected twice lost its intermediate prediction outright.
+
+Now: the prediction is immutable, the human's answer lives on `Part.final_grade` / `final_damage_codes` / `final_confidence` (+ `condition_set_by_user_id`, `condition_set_at`), and every display surface resolves the two through **one** function, `parts/effective-condition.ts`.
+
+- **Per-field resolution, not all-or-nothing.** A manager who fixes a wrong grade but agrees with the AI's damage tags must not have those tags re-attributed to them.
+- **NULL means "nobody ruled on this"**, so a human-set *empty* damage list is a real answer ("I looked; there is no damage") and beats the AI's tags. Treating empty as absent would silently restore damage a manager had cleared. Pinned by a test.
+- **`originalValue` now records the previous *human* answer**, not the AI's original. Correcting B→A→C logs the second as replacing A. Citing B every time would misrepresent what changed.
+- **Analytics had to change or it would have silently regressed.** Grade distribution used to see corrections for free because they were written onto the analysis; it now `COALESCE`s onto `part.final_grade` over a join, or it would report the AI's originals and disagree with Inventory.
+
+The old e2e test asserted the mutation. It was **inverted with a comment explaining why, not deleted** — same convention as `vehicles.e2e-spec.ts`'s worker test.
+
+**Not done:** the migration does not un-mix historical corrections. Pre-existing corrected rows keep their mutated values on `ai_analyses`; the pre-correction value is only recoverable for fields that were actually corrected, and guessing the rest would fabricate provenance. Corrections from here on are clean.
+
+### Phase 2a — `prompt_version` is written, not just declared
+
+Phase 1 added the column and nothing populated it, which is the exact dead-schema pattern this project keeps criticizing. Closed: `PART_GRADING_PROMPT_VERSION` / `SCENE_DETECTION_PROMPT_VERSION` are exported from `gemini.service.ts` and wired into all three `AiAnalysis` creation sites (worker queue, intake, vehicle scan).
+
+**Each is `label+sha256(template)[0:8]`, not a hand-maintained number.** A version someone forgets to bump is worse than none — it asserts two predictions came from the same instructions when they did not, poisoning the dataset the column exists to protect. Both prompts embed `GRADING_RUBRIC`, so **editing the rubric changes both versions**, which is correct: a rubric change *is* a prompt change. The **template** is hashed, not the sent text, because the VIN roster is interpolated per vehicle and hashing the final string would mint a unique version per scan.
+
+### Phase 2b — vehicles have identity and acquisition facts
+
+`stock_number`, `odometer_miles`, `acquisition_cost`, `acquisition_source`, `acquisition_date`, `location_code` on `vehicles`; `next_stock_number` on `tenants`; partial unique index on `(tenant_id, stock_number)`.
+
+All of it is capturable **only when the car arrives**. Three months without acquisition cost is three months of permanently uncomputable margin, and **odometer is the input that decides a mechanical part's grade** — photographing an alternator cannot tell you, and the taxonomy contains engines, transmissions, alternators and starters.
+
+- **Stock numbers are issued from a per-tenant counter**, not a Postgres sequence (sequences are global objects; each tenant needs its own series). Claimed via `increment()` inside the existing transaction, which takes the row lock — concurrent intakes for one tenant serialize and cannot claim the same number.
+- **Issued after the idempotency check.** A retried sync returns its existing vehicle and must not burn a second number, which would leave a permanent gap in the yard's series. Pinned by a test.
+- **`PATCH /vehicles/:id`** (manager/owner) makes the fields reachable — deliberately, so this didn't repeat the dead-column mistake. It accepts neither `stockNumber` nor `vin`: a stock number is permanent the moment it is printed on a label, and a general update endpoint has no business editing it.
+- Acquisition cost is manager/owner-only. A worker on the yard floor has no reason to edit what a car cost.
+
+### 🔴 The migration trap this uncovered — read before writing another data migration
+
+This was the first migration in the project to run **DML against an RLS-protected table**, and it nearly failed silently.
+
+Every tenant-scoped table has `FORCE ROW LEVEL SECURITY`, which applies to the table **owner** too. Migrations run as `junkyard_app` with no `app.tenant_id` set, so the policy's `NULLIF(current_setting(...), '')` resolves to NULL and **the table looks empty**. A plain `UPDATE vehicles SET stock_number = ...` would have reported success and changed **zero rows**, with no error anywhere.
+
+The fix is to set tenant context per tenant and update that tenant's rows, exactly as the application does — see `1786330000000-AddVehicleIdentityAndAcquisition.ts`. Deliberately **not** `DISABLE ROW LEVEL SECURITY` around the backfill: that works, but it normalizes switching tenant isolation off inside a migration, and the next person to copy the pattern might not switch it back on.
+
+Verified against the live DB: 6 vehicles across 6 different tenants each correctly received `1000`, with every counter at `1001`.
+
+### Also fixed: the `sync.test.ts` cascade
+
+`registerSyncTriggers` was torn down as the **last statement of each test body**, so a failed assertion leaked that test's store subscription — and its client — into every subsequent test. Test 2's `mockResolvedValue` client then synced test 3's draft, which expected `sync_failed`. Two failures, one cause.
+
+Fixed with an `afterEach` teardown. **Proven rather than assumed**: forcing test 2 to fail produced 2 failures unfixed vs. 1 fixed, with the collateral failure at the same test and column as the original flake. The originating timeout was never identified and has not recurred in 5 full runs — deliberately not "fixed" by bumping timeouts, since that would be guessing at a cause with no evidence.
+
+### Verification
+Backend **115 unit** (was 105) + **103 e2e / 18 suites** (was 94). Frontend **220** (was 215), untouched by these changes — the API additions are purely additive. `tsc` clean both sides, eslint **0 errors**. Both migrations applied to the dev DB.
+
+### Still open from this work
+- **No UI** for odometer / acquisition cost / location. Backend-only so far.
+- **`grade_basis` deferred to D4** rather than added here, to keep phase 1 purely about immutability.
+- **`FIRST_STOCK_NUMBER = 1000`** is now in real data — a one-way door, cheap to change today (see START HERE).
+
+## 2026-08-12 — Car-Part.com is the Phase 1 syndication target
+
+Product direction: **publishing to Car-Part.com moves from Phase 2 into Phase 1** and becomes the main focus. eBay and Shopify stay in Phase 2. Docs updated: `PRODUCT_SPEC.md` (roadmap), `ARCHITECTURE.md` §5, `DESIGN_SPEC.md` §1/§9/§10, `BUILD_PLAN.md` (superseding note on the GSTACK CEO review), `MEMORY.md` (decision entry with full reasoning).
+
+**No code has been written for this yet.** What follows is the scope, not a report of work done.
+
+### The blocker is a business step, and nothing routes around it
+Car-Part.com's recycler onboarding is: registration form + **NDA** → they issue credentials → the credentials unlock upload instructions **specific to your platform**. So the feed format is not public. **Do not write the exporter against a guessed format.** Register first; that's days of latency and zero code.
+
+> Confidence note: this came from a search-result snippet, not a page read directly — `car-part.com` returns 403 to automated fetches. `products.car-part.com` is fetchable. **Confirm the process by phone before planning around it.**
+
+Questions to get answered during that call, because each one changes the build:
+- Accepted feed formats, and the upload frequency they expect.
+- Whether a **third-party/in-house system** may upload directly. Car-Part Exchange material says partners "do not have to be Checkmate users, but they must upload their inventory to Car-Part.com", which suggests yes — confirm it.
+- Whether **Car-Part Interchange** is licensable as part of the recycler agreement. This is the cheapest path to the interchange numbers the platform needs.
+- Whether Car-Part Pro certification is wanted (it adds warranty/return obligations — Phase 2 per PRODUCT_SPEC).
+
+### Interchange is the load-bearing dependency
+Car-Part's search matches on interchange number. A part without one is close to unfindable, so this is not a nice-to-have. It reverses `ARCHITECTURE.md` §5's old "avoid Hollander early" line and resolves the ARCHITECTURE-vs-DESIGN_SPEC contradiction that sat in the backlog for months. Preferred source is Car-Part Interchange, not Hollander. **Interchange is still not full fitment** — ACES/OEM stays deferred.
+
+### Gap between what Car-Part expects and what we emit
+
+| Car-Part expects | We have today |
+|---|---|
+| Interchange number per part | Nothing |
+| ARA damage codes (location + type + repair-hours, e.g. `5P1`) | Free text — `misalignment`, `scuff`, `obscured` |
+| ARA grades **A/B/C** | A/B/C/**D** — a fourth grade, uncommitted in the tree right now |
+| A real price | Hardcoded `''`, `parts.service.ts:390` |
+| Their part-type codes | `part_taxonomies`, the yard's own naming |
+| Their feed format | `toCsv` + 9 ad-hoc columns, `parts.service.ts:355` |
+| — | `Listing` entity and `ListingMarketplace.CAR_PART` exist in schema, referenced nowhere |
+
+### 🔴 Time-sensitive: decide Grade D before committing it
+The **uncommitted** Grade D chunk adds a fourth grade (`gemini.service.spec.ts:115`). ARA grading is **A/B/C**.
+
+> **RESOLVED 2026-08-12: keep A/B/C/D internally, map at the export adapter.** Canonical inventory is not designed around a marketplace, so an unknown external standard cannot dictate the internal rubric. The Grade D chunk is unblocked for commit. What must *not* happen is an internal grade leaving for any marketplace unmapped.
+
+### Work that is unblocked today (does not need the NDA'd spec)
+1. **Price** — mandatory everywhere, currently an empty string, entirely spec-independent. Highest-value work available right now.
+2. **Grade reconciliation** — see above, and it's cheapest before the commit.
+3. **ARA damage codes** — structured codes instead of free text. The largest of the three: touches the Gemini prompt, the response schema, and the human-correction Moat log.
+4. **Activate the `Listing` entity** so there's a record of what was sent where and when.
+
+### Competitive note
+**Partmate** (VIN → interchange portable inventory) and **Photomate** (mobile photo/inventory) are Car-Part.com's own tools and overlap this app's core loop directly. The differentiator is the AI grading and the correction Moat, not the inventorying itself. Worth being clear-eyed about this when pitching a yard that already runs Partmate.
+
 ## 2026-08-08 (later) — VIN-driven AI part recognition on the manager screen
 
 **The complaint:** *"I'm on the manager dash, I see the vehicle, I see the VIN and the photos, but when I upload new photos the AI is not able to recognize it."* Correct, and it was by design, for two separate reasons:
@@ -211,7 +410,9 @@ A worker had no way to see a vehicle once its draft synced — Home only lists i
 - **The mobile route is `/previous-vehicles`, deliberately not `/vehicles`.** Next route groups don't namespace URLs, so `(mobile)/vehicles` and `(desktop)/vehicles` both resolve to `/vehicles` and Turbopack fails the build with "two parallel pages that resolve to the same path". Confirmed by building it. Same collision class that made the worker Home screen unreachable for all of Phase 7.
 - **These uploads bypass the IndexedDB draft queue** and POST straight to the server, because the vehicle already exists server-side and there's no draft to attach them to. So unlike intake, **this screen requires a connection.** If offline support here is wanted, that's a real design change, not a tweak.
 
-## ▶ Start here next session (2026-08-07)
+## ▶ Start here next session (2026-08-07) — SUPERSEDED, kept for history
+
+> Not the current handoff. The live one is **"▶ START HERE (handoff, end of 2026-08-12)"** at the top of this file. Everything below is preserved because its diagnoses and traps are still useful, not because its next steps are current.
 
 **State:** 8 commits on branch `feat/intake-endpoint-and-inventory-editing`, **nothing pushed**, plus **today's bulk-scan work is uncommitted in the working tree**. Backend 61 unit + 77 e2e green, frontend 193 tests green, both lint (0 errors) and `tsc --noEmit` clean, `next build` succeeds.
 
@@ -280,9 +481,11 @@ All 7 BUILD_PLAN phases are complete and the core pipeline is live-verified. Thi
 `Embedding`, `PricingHistory`, and `Listing` entities exist with tables, RLS policies, and migrations, but are referenced **nowhere** in application code — verified by grep. Built day-one per the MEMORY.md decision to model the full schema up front. Harmless, but don't mistake their existence for working features: pgvector similarity search, price history, and marketplace listing state are all unimplemented.
 
 ### P4 — roadmap, explicitly out of MVP scope
-eBay Trading API / Shopify GraphQL / Car-Part syndication (MVP ships CSV export only, and its `price` column is a hardcoded empty placeholder); AutoCare ACES fitment; MarketCheck or DataOne for richer VIN data than free NHTSA; dynamic pricing; YOLO/SAM custom models trained on the HumanCorrection Moat.
+eBay Trading API / Shopify GraphQL syndication; AutoCare ACES fitment beyond interchange; MarketCheck or DataOne for richer VIN data than free NHTSA; dynamic pricing; YOLO/SAM custom models trained on the HumanCorrection Moat.
 
-**Doc inconsistency to resolve before anyone builds fitment:** ARCHITECTURE.md §5 says explicitly *avoid Hollander, move toward ACES*; DESIGN_SPEC.md §10 lists "Hollander Interchange mapping" as a Month 3-4 build item. These contradict. ARCHITECTURE's position also looks like the right one on cost/licensing grounds for an early-stage yard tool.
+> **Car-Part.com moved out of P4 and into Phase 1 on 2026-08-12** by product direction. See the "Car-Part.com is the Phase 1 target" section at the top of this file, and MEMORY.md's 2026-08-12 decision entry.
+
+~~**Doc inconsistency to resolve before anyone builds fitment:** ARCHITECTURE.md §5 says explicitly *avoid Hollander, move toward ACES*; DESIGN_SPEC.md §10 lists "Hollander Interchange mapping" as a Month 3-4 build item.~~ **Resolved 2026-08-12.** Making Car-Part.com the Phase 1 destination forced the question, because Car-Part's search is interchange-based. Outcome: **interchange is in scope now, sourced from Car-Part Interchange via the recycler agreement rather than Hollander.** Full fitment (ACES/OEM) stays deferred — interchange is not fitment. Both docs updated.
 
 ## ✅ Fixed (2026-08-03): `POST /vehicles/intake` now exists
 
