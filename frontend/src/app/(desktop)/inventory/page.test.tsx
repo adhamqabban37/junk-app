@@ -25,8 +25,23 @@ function makePart(i: number): PartListItem {
     taxonomyId: "tax-1",
     taxonomyName: `Part ${i}`,
     vehicle: { id: "v1", vin: `VIN${i.toString().padStart(10, "0")}`, make: "Honda", model: "Accord", year: 2005 },
-    photoIds: [],
+    photoIds: [`photo-${i}`],
     photosCount: 1,
+    latestAnalysis: null,
+  };
+}
+
+/** A part with a real taxonomy name, for the family-grouping tests. */
+function makeNamedPart(id: string, taxonomyName: string, photoIds: string[] = []): PartListItem {
+  return {
+    id,
+    status: "pending_ai",
+    createdAt: new Date().toISOString(),
+    taxonomyId: "tax-1",
+    taxonomyName,
+    vehicle: null,
+    photoIds,
+    photosCount: photoIds.length,
     latestAnalysis: null,
   };
 }
@@ -148,5 +163,105 @@ describe("InventoryPage", () => {
     await waitFor(() =>
       expect(recordCorrection).toHaveBeenCalledWith("fake-token", "analysis-1", "grade", "A"),
     );
+  });
+
+  describe("family grouping", () => {
+    const FOUR_DOORS = [
+      makeNamedPart("d1", "Door (Passenger Rear)"),
+      makeNamedPart("d2", "Door (Driver Front)"),
+      makeNamedPart("d3", "Door (Passenger Front)"),
+      makeNamedPart("d4", "Door (Driver Rear)"),
+    ];
+
+    it("puts a family's parts under one heading, in physical order", async () => {
+      vi.mocked(listParts).mockResolvedValue({ items: FOUR_DOORS, total: 4, page: 1, pageSize: 1000 });
+
+      render(<InventoryPage />);
+
+      expect(await screen.findByRole("rowheader", { name: /doors/i })).toBeInTheDocument();
+      const labels = (await screen.findAllByTestId(/^inventory-position-/)).map((el) => el.textContent);
+      expect(labels).toEqual(["Front Left", "Front Right", "Rear Left", "Rear Right"]);
+    });
+
+    it("does not put a heading on a family holding a single part", async () => {
+      vi.mocked(listParts).mockResolvedValue({
+        items: [makeNamedPart("a1", "Alternator")],
+        total: 1,
+        page: 1,
+        pageSize: 1000,
+      });
+
+      render(<InventoryPage />);
+
+      expect(await screen.findByText("Alternator")).toBeInTheDocument();
+      expect(screen.queryByRole("rowheader")).not.toBeInTheDocument();
+    });
+
+    /**
+     * Grouping must not quietly cost the virtualization the flat list had.
+     * A yard's inventory is large, which is why PAGE_SIZE is 1000 and the
+     * list is virtualized in the first place.
+     */
+    it("stays virtualized once grouped", async () => {
+      const items = Array.from({ length: 10000 }, (_, i) => makePart(i));
+      vi.mocked(listParts).mockResolvedValue({ items, total: items.length, page: 1, pageSize: 10000 });
+
+      render(<InventoryPage />);
+      await screen.findByText("Part 0");
+
+      expect(screen.getAllByRole("row").length).toBeLessThan(50);
+    });
+
+    it("shows the whole group's photos in the grid when a heading is selected", async () => {
+      const doors = [
+        makeNamedPart("d1", "Door (Driver Front)", ["ph-1"]),
+        makeNamedPart("d2", "Door (Passenger Front)", ["ph-2"]),
+      ];
+      vi.mocked(listParts).mockResolvedValue({ items: doors, total: 2, page: 1, pageSize: 1000 });
+      const user = userEvent.setup();
+
+      render(<InventoryPage />);
+      await user.click(await screen.findByRole("rowheader", { name: /doors/i }));
+
+      expect(await screen.findByTestId("part-photo-ph-1")).toBeInTheDocument();
+      expect(screen.getByTestId("part-photo-ph-2")).toBeInTheDocument();
+    });
+
+    it("narrows the grid to one part when that part is selected", async () => {
+      const doors = [
+        makeNamedPart("d1", "Door (Driver Front)", ["ph-1"]),
+        makeNamedPart("d2", "Door (Passenger Front)", ["ph-2"]),
+      ];
+      vi.mocked(listParts).mockResolvedValue({ items: doors, total: 2, page: 1, pageSize: 1000 });
+      vi.mocked(getPart).mockResolvedValue({
+        id: "d1",
+        status: "pending_ai",
+        createdAt: new Date().toISOString(),
+        taxonomyId: "tax-1",
+        taxonomyName: "Door (Driver Front)",
+        vehicle: null,
+        photos: [{ id: "ph-1", url: "d1/ph-1.jpg" }],
+        latestAnalysis: null,
+      } as PartDetail);
+      const user = userEvent.setup();
+
+      render(<InventoryPage />);
+      await user.click(await screen.findByTestId("inventory-row-d1"));
+
+      expect(await screen.findByTestId("part-photo-ph-1")).toBeInTheDocument();
+      expect(screen.queryByTestId("part-photo-ph-2")).not.toBeInTheDocument();
+    });
+
+    it("shows the asked-for Front/Left wording, not the stored Driver/Passenger", async () => {
+      // Storage stays Driver/Passenger on purpose -- TaxonomyMatcher and the
+      // Car-Part export boundary depend on it. Only the display translates.
+      vi.mocked(listParts).mockResolvedValue({ items: FOUR_DOORS, total: 4, page: 1, pageSize: 1000 });
+
+      render(<InventoryPage />);
+      await screen.findByRole("rowheader", { name: /doors/i });
+
+      expect(screen.queryByText(/driver/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/passenger/i)).not.toBeInTheDocument();
+    });
   });
 });
