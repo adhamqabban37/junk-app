@@ -12,7 +12,7 @@ function nextStepFor(draft: VehicleDraft): string {
   if (!draft.vin) {
     return `/intake/${draft.id}/vin`;
   }
-  return `/intake/${draft.id}/parts`;
+  return `/intake/${draft.id}/vehicle`;
 }
 
 function draftLabel(draft: VehicleDraft): string {

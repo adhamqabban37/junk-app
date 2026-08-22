@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { deleteDraft, listDrafts, putDraft } from "./db";
-import type { DraftPhoto, PartDraft, VehicleDraft, VinEntryMethod } from "./types";
+import type { DraftPhoto, VehicleDraft, VinEntryMethod } from "./types";
 
 interface IntakeState {
   drafts: VehicleDraft[];
@@ -9,9 +9,7 @@ interface IntakeState {
   createDraft: () => Promise<VehicleDraft>;
   setVin: (draftId: string, vin: string, method: VinEntryMethod) => Promise<void>;
   setDecoded: (draftId: string, decoded: VehicleDraft["decoded"]) => Promise<void>;
-  addExteriorPhoto: (draftId: string, photo: DraftPhoto) => Promise<void>;
-  addPart: (draftId: string, part: PartDraft) => Promise<void>;
-  addPartPhoto: (draftId: string, partId: string, photo: DraftPhoto) => Promise<void>;
+  addPhoto: (draftId: string, photo: DraftPhoto) => Promise<void>;
   queueForSync: (draftId: string) => Promise<void>;
   markSyncing: (draftId: string) => Promise<void>;
   markSynced: (draftId: string) => Promise<void>;
@@ -60,8 +58,7 @@ export const useIntakeStore = create<IntakeState>((set, get) => {
         vin: null,
         vinEntryMethod: null,
         decoded: null,
-        exteriorPhotos: [],
-        parts: [],
+        photos: [],
         status: "draft",
         createdAt: nowIso(),
         updatedAt: nowIso(),
@@ -81,22 +78,9 @@ export const useIntakeStore = create<IntakeState>((set, get) => {
       await persist({ ...draft, decoded });
     },
 
-    addExteriorPhoto: async (draftId, photo) => {
+    addPhoto: async (draftId, photo) => {
       const draft = findDraftOrThrow(get().drafts, draftId);
-      await persist({ ...draft, exteriorPhotos: [...draft.exteriorPhotos, photo] });
-    },
-
-    addPart: async (draftId, part) => {
-      const draft = findDraftOrThrow(get().drafts, draftId);
-      await persist({ ...draft, parts: [...draft.parts, part] });
-    },
-
-    addPartPhoto: async (draftId, partId, photo) => {
-      const draft = findDraftOrThrow(get().drafts, draftId);
-      const parts = draft.parts.map((p) =>
-        p.id === partId ? { ...p, photos: [...p.photos, photo] } : p,
-      );
-      await persist({ ...draft, parts });
+      await persist({ ...draft, photos: [...draft.photos, photo] });
     },
 
     queueForSync: async (draftId) => {

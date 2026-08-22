@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useAuthSession } from "@/lib/auth-session";
 import { listVehicles, type CrushStatus, type VehicleListItem } from "@/lib/api/vehicles";
@@ -90,7 +91,12 @@ export default function VehiclesPage() {
       ) : (
         <div className="grid gap-3">
           {items.map((vehicle) => (
-            <div key={vehicle.id} data-testid={`vehicle-row-${vehicle.id}`} className="rounded-xl border border-border p-4">
+            <Link
+              key={vehicle.id}
+              href={`/vehicles/${vehicle.id}`}
+              data-testid={`vehicle-row-${vehicle.id}`}
+              className="block rounded-xl border border-border p-4 transition-colors hover:bg-muted/50"
+            >
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <p className="font-medium">{vehicleTitle(vehicle)}</p>
@@ -101,7 +107,7 @@ export default function VehiclesPage() {
                   <span className="rounded-full bg-muted px-2 py-0.5 font-medium">{vehicle.partsCount}</span>
                 </div>
               </div>
-            </div>
+            </Link>
           ))}
         </div>
       )}

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import VehiclePageClient from "./vehicle-page-client";
 import { _resetDbForTests } from "@/lib/offline/db";
 import { useIntakeStore } from "@/lib/offline/store";
-import type { DraftPhoto, VehicleImageAngle } from "@/lib/offline/types";
+import type { DraftPhoto } from "@/lib/offline/types";
 
 const pushMock = vi.fn();
 vi.mock("next/navigation", () => ({
@@ -25,11 +25,10 @@ vi.mock("@/lib/offline/capture", async (importOriginal) => {
   };
 });
 
-function makePhoto(angle: VehicleImageAngle): DraftPhoto {
+function makePhoto(id: string): DraftPhoto {
   return {
-    id: `${angle}-photo`,
+    id,
     blob: new Blob(["x"], { type: "image/jpeg" }),
-    angle,
     qualityFlags: { blurry: false, tooDark: false },
     capturedAt: new Date().toISOString(),
   };
@@ -75,18 +74,16 @@ describe("VehiclePageClient", () => {
     expect(screen.getByLabelText(/model/i)).toHaveValue("");
   });
 
-  it("disables Continue until all 4 exterior angles are captured", async () => {
+  it("disables Finish until at least one photo is captured, with no part/taxonomy picker involved", async () => {
     render(<VehiclePageClient draftId={draftId} />);
     await screen.findByLabelText(/make/i);
 
-    expect(screen.getByRole("button", { name: /continue/i })).toBeDisabled();
-    expect(screen.getByText(/0 \/ 4/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /finish/i })).toBeDisabled();
+    expect(screen.getByText(/0 captured/i)).toBeInTheDocument();
   });
 
-  it("enables Continue once all 4 angles are captured, and saving navigates to Part Selection", async () => {
-    for (const angle of ["front", "rear", "left", "right"] as const) {
-      await useIntakeStore.getState().addExteriorPhoto(draftId, makePhoto(angle));
-    }
+  it("enables Finish once a photo is captured, and finishing queues the draft for sync and navigates home", async () => {
+    await useIntakeStore.getState().addPhoto(draftId, makePhoto("photo-1"));
     const user = userEvent.setup();
     render(<VehiclePageClient draftId={draftId} />);
 
@@ -95,26 +92,27 @@ describe("VehiclePageClient", () => {
     await user.clear(screen.getByLabelText(/model/i));
     await user.type(screen.getByLabelText(/model/i), "Accord");
 
-    const continueButton = screen.getByRole("button", { name: /continue/i });
-    await waitFor(() => expect(continueButton).toBeEnabled());
-    await user.click(continueButton);
+    const finishButton = screen.getByRole("button", { name: /finish/i });
+    await waitFor(() => expect(finishButton).toBeEnabled());
+    await user.click(finishButton);
 
-    await waitFor(() => expect(pushMock).toHaveBeenCalledWith(`/intake/${draftId}/parts`));
+    await waitFor(() => expect(pushMock).toHaveBeenCalledWith("/"));
     const draft = useIntakeStore.getState().drafts.find((d) => d.id === draftId);
     expect(draft?.decoded).toMatchObject({ make: "HONDA", model: "Accord" });
+    expect(draft?.status).toBe("queued");
   });
 
   it("shows a quality warning badge on a captured photo flagged blurry or dark", async () => {
-    const blurryPhoto = makePhoto("front");
+    const blurryPhoto = makePhoto("photo-1");
     blurryPhoto.qualityFlags = { blurry: true, tooDark: false };
-    await useIntakeStore.getState().addExteriorPhoto(draftId, blurryPhoto);
+    await useIntakeStore.getState().addPhoto(draftId, blurryPhoto);
 
     render(<VehiclePageClient draftId={draftId} />);
 
     expect(await screen.findByText(/blurry/i)).toBeInTheDocument();
   });
 
-  it("uploading a photo file for the next angle saves it via captureFromFile, without needing the live camera", async () => {
+  it("uploading a photo file saves it via captureFromFile, without needing the live camera or picking a part", async () => {
     captureFromFileMock.mockResolvedValue({
       blob: new Blob(["x"], { type: "image/jpeg" }),
       qualityFlags: { blurry: false, tooDark: false },
@@ -123,15 +121,15 @@ describe("VehiclePageClient", () => {
     render(<VehiclePageClient draftId={draftId} />);
     await screen.findByLabelText(/make/i);
 
-    expect(screen.getByText(/0 \/ 4/)).toBeInTheDocument();
+    expect(screen.getByText(/0 captured/i)).toBeInTheDocument();
 
-    const file = new File(["fake-bytes"], "front.jpg", { type: "image/jpeg" });
+    const file = new File(["fake-bytes"], "photo.jpg", { type: "image/jpeg" });
     const input = screen.getByLabelText(/choose photo/i);
     await user.upload(input, file);
 
     expect(captureFromFileMock).toHaveBeenCalledWith(file);
-    await waitFor(() => expect(screen.getByText(/1 \/ 4/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/1 captured/i)).toBeInTheDocument());
     const draft = useIntakeStore.getState().drafts.find((d) => d.id === draftId);
-    expect(draft?.exteriorPhotos[0]).toMatchObject({ angle: "front" });
+    expect(draft?.photos).toHaveLength(1);
   });
 });

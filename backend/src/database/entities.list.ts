@@ -9,6 +9,7 @@ import { PricingHistory } from './entities/pricing-history.entity';
 import { Tenant } from './entities/tenant.entity';
 import { User } from './entities/user.entity';
 import { VehicleImage } from './entities/vehicle-image.entity';
+import { VehiclePhoto } from './entities/vehicle-photo.entity';
 import { Vehicle } from './entities/vehicle.entity';
 
 /** Entity classes only (the entities/index.ts barrel also re-exports enums, which TypeORM's `entities` array rejects). */
@@ -17,6 +18,7 @@ export const ENTITIES = [
   User,
   Vehicle,
   VehicleImage,
+  VehiclePhoto,
   PartTaxonomy,
   Part,
   PartImage,

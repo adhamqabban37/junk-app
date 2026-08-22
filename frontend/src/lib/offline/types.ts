@@ -1,7 +1,5 @@
 export type VinEntryMethod = "scanned" | "manual";
 
-export type VehicleImageAngle = "front" | "rear" | "left" | "right";
-
 export type DraftStatus = "draft" | "queued" | "syncing" | "synced" | "sync_failed";
 
 export interface DecodedVehicle {
@@ -20,16 +18,8 @@ export interface QualityFlags {
 export interface DraftPhoto {
   id: string;
   blob: Blob;
-  angle?: VehicleImageAngle;
   qualityFlags: QualityFlags;
   capturedAt: string;
-}
-
-export interface PartDraft {
-  id: string;
-  taxonomyId: string;
-  taxonomyName: string;
-  photos: DraftPhoto[];
 }
 
 export interface TaxonomyItem {
@@ -44,8 +34,7 @@ export interface VehicleDraft {
   vin: string | null;
   vinEntryMethod: VinEntryMethod | null;
   decoded: DecodedVehicle | null;
-  exteriorPhotos: DraftPhoto[];
-  parts: PartDraft[];
+  photos: DraftPhoto[];
   status: DraftStatus;
   syncError?: string;
   createdAt: string;

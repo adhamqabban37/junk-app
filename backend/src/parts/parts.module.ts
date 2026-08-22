@@ -8,5 +8,6 @@ import { PartsService } from './parts.service';
   imports: [BullModule.registerQueue({ name: AI_ANALYSIS_QUEUE })],
   controllers: [PartsController],
   providers: [PartsService],
+  exports: [PartsService],
 })
 export class PartsModule {}

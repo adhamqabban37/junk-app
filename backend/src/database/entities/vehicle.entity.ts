@@ -46,6 +46,15 @@ export class Vehicle {
   })
   crushStatus!: CrushStatus;
 
+  /** Client-generated draft id from the mobile intake flow, unique per tenant (NULLs excluded) -- lets a retried sync (`syncPendingDrafts()`) detect it already succeeded instead of creating a duplicate vehicle. Null for vehicles that didn't come through /vehicles/intake (e.g. seeded). */
+  @Column({
+    name: 'intake_draft_id',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+  })
+  intakeDraftId!: string | null;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt!: Date;
 }

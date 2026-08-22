@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, NotFoundException } from '@nestjs/common';
 import type { Queue } from 'bullmq';
-import { DataSource, FindOptionsWhere, In } from 'typeorm';
+import { DataSource, EntityManager, FindOptionsWhere, In } from 'typeorm';
 import {
   AI_ANALYSIS_QUEUE,
   AiAnalysisJobData,
@@ -14,7 +14,10 @@ import { PartTaxonomy } from '../database/entities/part-taxonomy.entity';
 import { Vehicle } from '../database/entities/vehicle.entity';
 import { withTenantContext } from '../database/tenant-context';
 import { toCsv } from './csv';
-import { LocalFileStorage } from '../storage/local-file-storage';
+import {
+  LocalFileStorage,
+  resolveImageExtension,
+} from '../storage/local-file-storage';
 
 export interface PartListResult {
   items: PartListItem[];
@@ -70,43 +73,59 @@ export class PartsService {
     partId: string,
     file: { buffer: Buffer; mimetype: string },
   ): Promise<PartImage> {
-    return withTenantContext(this.dataSource, tenantId, async (manager) => {
-      const part = await manager
-        .getRepository(Part)
-        .findOne({ where: { id: partId } });
-      if (!part) {
-        throw new NotFoundException('Part not found');
-      }
+    return withTenantContext(this.dataSource, tenantId, (manager) =>
+      this.addImageInTransaction(manager, tenantId, partId, file),
+    );
+  }
 
-      const partImageId = randomUUID();
-      const extension = file.mimetype === 'image/png' ? 'png' : 'jpg';
-      const relativePath = await this.storage.save(
-        `${tenantId}/${partId}/${partImageId}.${extension}`,
-        file.buffer,
-      );
+  /**
+   * Same as `addImage()`, but runs against a manager the caller already has
+   * a transaction open on, instead of opening its own via
+   * `withTenantContext()`. Lets `VehiclesService.intake()` create a
+   * Vehicle + its Parts + all their PartImages atomically in one
+   * transaction, reusing this exact storage+insert+enqueue logic per photo.
+   */
+  async addImageInTransaction(
+    manager: EntityManager,
+    tenantId: string,
+    partId: string,
+    file: { buffer: Buffer; mimetype: string },
+  ): Promise<PartImage> {
+    const part = await manager
+      .getRepository(Part)
+      .findOne({ where: { id: partId } });
+    if (!part) {
+      throw new NotFoundException('Part not found');
+    }
 
-      const partImage = await manager.getRepository(PartImage).save(
-        manager.getRepository(PartImage).create({
-          id: partImageId,
-          tenantId,
-          partId,
-          url: relativePath,
-          qualityFlags: null,
-        }),
-      );
+    const partImageId = randomUUID();
+    const extension = resolveImageExtension(file.mimetype);
+    const relativePath = await this.storage.save(
+      `${tenantId}/${partId}/${partImageId}.${extension}`,
+      file.buffer,
+    );
 
-      // Non-blocking per CLAUDE.md rule 4: the upload request returns as
-      // soon as the image is stored, grading happens asynchronously.
-      // Conservative retry budget -- see AiAnalysisProcessor's concurrency
-      // comment re: Gemini's exact rate limit not being pinned down yet.
-      await this.aiQueue.add(
-        'analyze',
-        { tenantId, partImageId: partImage.id },
-        { attempts: 3, backoff: { type: 'exponential', delay: 2000 } },
-      );
+    const partImage = await manager.getRepository(PartImage).save(
+      manager.getRepository(PartImage).create({
+        id: partImageId,
+        tenantId,
+        partId,
+        url: relativePath,
+        qualityFlags: null,
+      }),
+    );
 
-      return partImage;
-    });
+    // Non-blocking per CLAUDE.md rule 4: the upload request returns as
+    // soon as the image is stored, grading happens asynchronously.
+    // Conservative retry budget -- see AiAnalysisProcessor's concurrency
+    // comment re: Gemini's exact rate limit not being pinned down yet.
+    await this.aiQueue.add(
+      'analyze',
+      { tenantId, partImageId: partImage.id },
+      { attempts: 3, backoff: { type: 'exponential', delay: 2000 } },
+    );
+
+    return partImage;
   }
 
   async list(

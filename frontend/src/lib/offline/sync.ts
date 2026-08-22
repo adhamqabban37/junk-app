@@ -11,24 +11,8 @@ function buildIntakeFormData(draft: VehicleDraft): FormData {
   formData.append("vin", draft.vin ?? "");
   formData.append("vinEntryMethod", draft.vinEntryMethod ?? "");
   formData.append("decoded", JSON.stringify(draft.decoded));
-  formData.append(
-    "parts",
-    JSON.stringify(
-      draft.parts.map((p) => ({
-        id: p.id,
-        taxonomyId: p.taxonomyId,
-        taxonomyName: p.taxonomyName,
-        photoIds: p.photos.map((photo) => photo.id),
-      })),
-    ),
-  );
-  for (const photo of draft.exteriorPhotos) {
-    formData.append(`exteriorPhoto:${photo.angle ?? "unknown"}:${photo.id}`, photo.blob, `${photo.id}.jpg`);
-  }
-  for (const part of draft.parts) {
-    for (const photo of part.photos) {
-      formData.append(`partPhoto:${part.id}:${photo.id}`, photo.blob, `${photo.id}.jpg`);
-    }
+  for (const photo of draft.photos) {
+    formData.append(`photo:${photo.id}`, photo.blob, `${photo.id}.jpg`);
   }
   return formData;
 }

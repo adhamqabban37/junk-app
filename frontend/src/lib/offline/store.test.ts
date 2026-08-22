@@ -59,34 +59,13 @@ describe("useIntakeStore", () => {
     expect(persisted.vin).toBe("1HGCM82633A123456");
   });
 
-  it("accumulates exterior photos without overwriting earlier ones", async () => {
+  it("accumulates photos without overwriting earlier ones", async () => {
     const draft = await useIntakeStore.getState().createDraft();
-    await useIntakeStore.getState().addExteriorPhoto(draft.id, makePhoto({ angle: "front" }));
-    await useIntakeStore.getState().addExteriorPhoto(draft.id, makePhoto({ angle: "rear" }));
+    await useIntakeStore.getState().addPhoto(draft.id, makePhoto({ id: "photo-1" }));
+    await useIntakeStore.getState().addPhoto(draft.id, makePhoto({ id: "photo-2" }));
 
     const updated = useIntakeStore.getState().drafts.find((d) => d.id === draft.id);
-    expect(updated?.exteriorPhotos.map((p) => p.angle)).toEqual(["front", "rear"]);
-  });
-
-  it("adds a part and then a photo to that part without touching other parts", async () => {
-    const draft = await useIntakeStore.getState().createDraft();
-    await useIntakeStore.getState().addPart(draft.id, {
-      id: "part-1",
-      taxonomyId: "tax-1",
-      taxonomyName: "Alternator",
-      photos: [],
-    });
-    await useIntakeStore.getState().addPart(draft.id, {
-      id: "part-2",
-      taxonomyId: "tax-2",
-      taxonomyName: "Starter",
-      photos: [],
-    });
-    await useIntakeStore.getState().addPartPhoto(draft.id, "part-1", makePhoto());
-
-    const updated = useIntakeStore.getState().drafts.find((d) => d.id === draft.id);
-    expect(updated?.parts.find((p) => p.id === "part-1")?.photos).toHaveLength(1);
-    expect(updated?.parts.find((p) => p.id === "part-2")?.photos).toHaveLength(0);
+    expect(updated?.photos.map((p) => p.id)).toEqual(["photo-1", "photo-2"]);
   });
 
   it("queueForSync -> markSynced transitions status and clears prior sync errors", async () => {

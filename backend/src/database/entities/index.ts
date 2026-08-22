@@ -2,6 +2,7 @@ export * from './tenant.entity';
 export * from './user.entity';
 export * from './vehicle.entity';
 export * from './vehicle-image.entity';
+export * from './vehicle-photo.entity';
 export * from './part-taxonomy.entity';
 export * from './part.entity';
 export * from './part-image.entity';

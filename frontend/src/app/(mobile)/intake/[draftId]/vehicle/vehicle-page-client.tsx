@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,14 +8,13 @@ import { PhotoPicker } from "@/components/mobile/photo-picker";
 import { useCamera } from "@/hooks/use-camera";
 import { captureFrame, captureFromFile } from "@/lib/offline/capture";
 import { useIntakeStore } from "@/lib/offline/store";
-import type { VehicleDraft, VehicleImageAngle } from "@/lib/offline/types";
-
-const REQUIRED_ANGLES: VehicleImageAngle[] = ["front", "rear", "left", "right"];
+import type { VehicleDraft } from "@/lib/offline/types";
 
 function VehicleForm({ draftId, draft }: { draftId: string; draft: VehicleDraft }) {
   const router = useRouter();
   const setDecoded = useIntakeStore((s) => s.setDecoded);
-  const addExteriorPhoto = useIntakeStore((s) => s.addExteriorPhoto);
+  const addPhoto = useIntakeStore((s) => s.addPhoto);
+  const queueForSync = useIntakeStore((s) => s.queueForSync);
 
   // Lazy initializers, not an effect: this component only mounts once
   // `draft` (and therefore `draft.decoded`, prefilled or not) is already
@@ -25,27 +24,21 @@ function VehicleForm({ draftId, draft }: { draftId: string; draft: VehicleDraft 
   const [model, setModel] = useState(() => draft.decoded?.model ?? "");
   const [year, setYear] = useState(() => (draft.decoded?.year ? String(draft.decoded.year) : ""));
   const [trim, setTrim] = useState(() => draft.decoded?.trim ?? "");
-  const [submitting, setSubmitting] = useState(false);
   const [capturing, setCapturing] = useState(false);
+  const [finishing, setFinishing] = useState(false);
 
   const { videoRef, ready: cameraReady, error: cameraError } = useCamera();
 
-  const capturedAngles = useMemo(
-    () => new Set(draft.exteriorPhotos.map((p) => p.angle)),
-    [draft.exteriorPhotos],
-  );
-  const nextAngle = REQUIRED_ANGLES.find((angle) => !capturedAngles.has(angle));
-  const allCaptured = capturedAngles.size >= REQUIRED_ANGLES.length;
+  const hasPhoto = draft.photos.length > 0;
 
   async function handleCapture() {
-    if (!nextAngle || !videoRef.current) return;
+    if (!videoRef.current) return;
     setCapturing(true);
     try {
       const { blob, qualityFlags } = await captureFrame(videoRef.current);
-      await addExteriorPhoto(draftId, {
+      await addPhoto(draftId, {
         id: crypto.randomUUID(),
         blob,
-        angle: nextAngle,
         qualityFlags,
         capturedAt: new Date().toISOString(),
       });
@@ -55,20 +48,17 @@ function VehicleForm({ draftId, draft }: { draftId: string; draft: VehicleDraft 
   }
 
   async function handleFileSelected(file: File) {
-    if (!nextAngle) return;
     const { blob, qualityFlags } = await captureFromFile(file);
-    await addExteriorPhoto(draftId, {
+    await addPhoto(draftId, {
       id: crypto.randomUUID(),
       blob,
-      angle: nextAngle,
       qualityFlags,
       capturedAt: new Date().toISOString(),
     });
   }
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setSubmitting(true);
+  async function handleFinish() {
+    setFinishing(true);
     try {
       await setDecoded(draftId, {
         make: make.trim() || null,
@@ -77,9 +67,10 @@ function VehicleForm({ draftId, draft }: { draftId: string; draft: VehicleDraft 
         trim: trim.trim() || null,
         raw: draft.decoded?.raw ?? {},
       });
-      router.push(`/intake/${draftId}/parts`);
+      await queueForSync(draftId);
+      router.push("/");
     } finally {
-      setSubmitting(false);
+      setFinishing(false);
     }
   }
 
@@ -116,74 +107,59 @@ function VehicleForm({ draftId, draft }: { draftId: string; draft: VehicleDraft 
 
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-medium">Exterior photos</h2>
-          <span className="text-sm text-muted-foreground">{capturedAngles.size} / 4</span>
+          <h2 className="text-sm font-medium">Photos</h2>
+          <span className="text-sm text-muted-foreground">{draft.photos.length} captured</span>
         </div>
 
-        <div className="grid grid-cols-2 gap-2">
-          {REQUIRED_ANGLES.map((angle) => {
-            const photo = draft.exteriorPhotos.find((p) => p.angle === angle);
-            return (
-              <div
-                key={angle}
-                className="flex h-20 flex-col items-center justify-center gap-1 rounded-lg border border-border text-xs capitalize"
-              >
-                <span>{angle}</span>
-                {photo ? (
-                  photo.qualityFlags.blurry || photo.qualityFlags.tooDark ? (
-                    <span className="text-destructive">
-                      {photo.qualityFlags.blurry ? "Blurry" : "Too dark"} — retake
-                    </span>
-                  ) : (
-                    <span className="text-emerald-600 dark:text-emerald-400">Captured</span>
-                  )
-                ) : (
-                  <span className="text-muted-foreground">Not yet</span>
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        {cameraReady && nextAngle && (
+        {cameraReady && (
           <div className="space-y-2">
             <video ref={videoRef} className="w-full rounded-lg" muted playsInline>
               <track kind="captions" />
             </video>
-            <p className="text-center text-sm text-muted-foreground capitalize">
-              Line up the {nextAngle} of the vehicle
-            </p>
             <Button
               type="button"
               className="w-full"
               disabled={capturing}
               onClick={() => void handleCapture()}
             >
-              Capture {nextAngle}
+              Capture photo
             </Button>
           </div>
         )}
-        {!cameraReady && cameraError && !allCaptured && (
+        {!cameraReady && cameraError && (
           <p role="alert" className="text-sm text-destructive">
             {cameraError}
           </p>
         )}
-        {nextAngle && (
-          <PhotoPicker
-            inputId="vehicle-photo-picker"
-            label={`Choose photo for ${nextAngle}`}
-            onFileSelected={(file) => void handleFileSelected(file)}
-          />
+        <PhotoPicker
+          inputId="vehicle-photo-picker"
+          label="Choose photo"
+          onFileSelected={(file) => void handleFileSelected(file)}
+        />
+
+        {hasPhoto && (
+          <ul className="grid gap-1">
+            {draft.photos.map((photo, i) => (
+              <li key={photo.id} className="flex items-center justify-between text-sm">
+                <span>Photo {i + 1}</span>
+                {(photo.qualityFlags.blurry || photo.qualityFlags.tooDark) && (
+                  <span className="text-destructive">
+                    {photo.qualityFlags.blurry ? "Blurry" : "Too dark"} — consider retaking
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
         )}
       </div>
 
       <Button
-        type="submit"
+        type="button"
         className="w-full"
-        disabled={!allCaptured || submitting}
-        onClick={(e) => void handleSubmit(e)}
+        disabled={!hasPhoto || finishing}
+        onClick={() => void handleFinish()}
       >
-        Continue
+        Finish &amp; queue for sync
       </Button>
     </div>
   );
