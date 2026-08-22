@@ -25,6 +25,17 @@ export interface VehicleDetail extends VehicleListItem {
   parts: Array<{ id: string; status: string; taxonomyId: string; createdAt: string }>;
 }
 
+export interface MyVehicleListItem extends VehicleListItem {
+  unassignedPhotosCount: number;
+}
+
+export interface MyVehicleListResult {
+  items: MyVehicleListItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
 export function listVehicles(
   token: string,
   params: { crushStatus?: CrushStatus; page?: number; pageSize?: number } = {},
@@ -36,6 +47,19 @@ export function listVehicles(
   if (params.pageSize) query.set("pageSize", String(params.pageSize));
   const qs = query.toString();
   return authFetch<VehicleListResult>(`/vehicles${qs ? `?${qs}` : ""}`, { token }, fetchImpl);
+}
+
+/** The mobile worker's own "sent vehicles" list -- GET /vehicles/mine, scoped server-side to the caller. */
+export function listMyVehicles(
+  token: string,
+  params: { page?: number; pageSize?: number } = {},
+  fetchImpl?: typeof fetch,
+): Promise<MyVehicleListResult> {
+  const query = new URLSearchParams();
+  if (params.page) query.set("page", String(params.page));
+  if (params.pageSize) query.set("pageSize", String(params.pageSize));
+  const qs = query.toString();
+  return authFetch<MyVehicleListResult>(`/vehicles/mine${qs ? `?${qs}` : ""}`, { token }, fetchImpl);
 }
 
 export function getVehicle(token: string, id: string, fetchImpl?: typeof fetch): Promise<VehicleDetail> {

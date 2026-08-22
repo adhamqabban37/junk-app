@@ -20,6 +20,21 @@ describe("PhotoPicker", () => {
     expect(onFileSelected).toHaveBeenCalledWith(file);
   });
 
+  it("calls onFileSelected once per file when multiple files are chosen via the input", async () => {
+    const onFileSelected = vi.fn();
+    const user = userEvent.setup();
+    render(<PhotoPicker inputId="test-picker" label="Choose photo" onFileSelected={onFileSelected} />);
+
+    const fileA = makeImageFile("a.jpg");
+    const fileB = makeImageFile("b.jpg");
+    const input = screen.getByLabelText(/choose photo/i);
+    await user.upload(input, [fileA, fileB]);
+
+    expect(onFileSelected).toHaveBeenCalledTimes(2);
+    expect(onFileSelected).toHaveBeenNthCalledWith(1, fileA);
+    expect(onFileSelected).toHaveBeenNthCalledWith(2, fileB);
+  });
+
   it("calls onFileSelected with the dropped file when an image is dragged and dropped", () => {
     const onFileSelected = vi.fn();
     render(<PhotoPicker inputId="test-picker" label="Choose photo" onFileSelected={onFileSelected} />);

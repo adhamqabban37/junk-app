@@ -6,9 +6,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PhotoPicker } from "@/components/mobile/photo-picker";
 import { useCamera } from "@/hooks/use-camera";
+import { apiBaseUrl } from "@/lib/api";
+import { useAuthSession } from "@/lib/auth-session";
 import { captureFrame, captureFromFile } from "@/lib/offline/capture";
 import { useIntakeStore } from "@/lib/offline/store";
+import { createFetchSyncClient, syncPendingDrafts } from "@/lib/offline/sync";
 import type { VehicleDraft } from "@/lib/offline/types";
+import { randomUUID } from "@/lib/uuid";
 
 function VehicleForm({ draftId, draft }: { draftId: string; draft: VehicleDraft }) {
   const router = useRouter();
@@ -26,6 +30,7 @@ function VehicleForm({ draftId, draft }: { draftId: string; draft: VehicleDraft 
   const [trim, setTrim] = useState(() => draft.decoded?.trim ?? "");
   const [capturing, setCapturing] = useState(false);
   const [finishing, setFinishing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   const { videoRef, ready: cameraReady, error: cameraError } = useCamera();
 
@@ -37,7 +42,7 @@ function VehicleForm({ draftId, draft }: { draftId: string; draft: VehicleDraft 
     try {
       const { blob, qualityFlags } = await captureFrame(videoRef.current);
       await addPhoto(draftId, {
-        id: crypto.randomUUID(),
+        id: randomUUID(),
         blob,
         qualityFlags,
         capturedAt: new Date().toISOString(),
@@ -50,7 +55,7 @@ function VehicleForm({ draftId, draft }: { draftId: string; draft: VehicleDraft 
   async function handleFileSelected(file: File) {
     const { blob, qualityFlags } = await captureFromFile(file);
     await addPhoto(draftId, {
-      id: crypto.randomUUID(),
+      id: randomUUID(),
       blob,
       qualityFlags,
       capturedAt: new Date().toISOString(),
@@ -59,6 +64,7 @@ function VehicleForm({ draftId, draft }: { draftId: string; draft: VehicleDraft 
 
   async function handleFinish() {
     setFinishing(true);
+    setSyncError(null);
     try {
       await setDecoded(draftId, {
         make: make.trim() || null,
@@ -68,6 +74,29 @@ function VehicleForm({ draftId, draft }: { draftId: string; draft: VehicleDraft 
         raw: draft.decoded?.raw ?? {},
       });
       await queueForSync(draftId);
+
+      // Queuing alone never sends anything -- it just marks the draft
+      // "queued" in IndexedDB and relies on the online-event listener /
+      // Background Sync (which doesn't fire at all over plain HTTP, see
+      // lib/pwa.ts) to eventually pick it up. Attempt a real send right
+      // now so "Finish" actually finishes when the device is online,
+      // instead of silently stranding the draft until someone happens to
+      // visit the Sync queue screen and tap "Sync now".
+      const token = useAuthSession.getState().token;
+      if (token) {
+        const client = createFetchSyncClient(apiBaseUrl(), () => token);
+        await syncPendingDrafts(client);
+      }
+
+      const result = useIntakeStore.getState().drafts.find((d) => d.id === draftId);
+      if (result?.status === "sync_failed") {
+        setSyncError(
+          result.syncError
+            ? `Couldn't send yet: ${result.syncError}. It's queued and will retry automatically, or you can retry from the Sync queue.`
+            : "Couldn't send yet. It's queued and will retry automatically, or you can retry from the Sync queue.",
+        );
+        return;
+      }
       router.push("/");
     } finally {
       setFinishing(false);
@@ -153,13 +182,25 @@ function VehicleForm({ draftId, draft }: { draftId: string; draft: VehicleDraft 
         )}
       </div>
 
+      {syncError && (
+        <p role="alert" className="text-sm text-destructive">
+          {syncError}
+        </p>
+      )}
+
+      {!hasPhoto && (
+        <p className="text-sm text-muted-foreground">
+          No photos yet — you can still send with whatever you have and add more later.
+        </p>
+      )}
+
       <Button
         type="button"
         className="w-full"
-        disabled={!hasPhoto || finishing}
+        disabled={finishing}
         onClick={() => void handleFinish()}
       >
-        Finish &amp; queue for sync
+        {finishing ? "Sending…" : "Finish & send"}
       </Button>
     </div>
   );

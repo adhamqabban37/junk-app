@@ -1,8 +1,10 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { useAuthSession } from "@/lib/auth-session";
+import { listMyVehicles, type MyVehicleListItem } from "@/lib/api/vehicles";
 import { useIntakeStore } from "@/lib/offline/store";
 import type { VehicleDraft } from "@/lib/offline/types";
 
@@ -17,6 +19,94 @@ function nextStepFor(draft: VehicleDraft): string {
 
 function draftLabel(draft: VehicleDraft): string {
   return draft.vin ?? "VIN not yet entered";
+}
+
+function sentVehicleTitle(vehicle: MyVehicleListItem): string {
+  return [vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(" ") || vehicle.vin;
+}
+
+/** The worker's own previously-sent vehicles -- separate from the offline
+ * in-progress drafts above, this is a live server list (GET /vehicles/mine)
+ * so it only loads once a session token exists. */
+function SentVehiclesSection() {
+  const router = useRouter();
+  const token = useAuthSession((s) => s.token);
+  const [items, setItems] = useState<MyVehicleListItem[] | null>(null);
+  const [error, setError] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    listMyVehicles(token, { pageSize: 25 })
+      .then((res) => {
+        if (cancelled) return;
+        setError(false);
+        setItems(res.items);
+      })
+      .catch(() => {
+        if (!cancelled) setError(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token, attempt]);
+
+  // No token yet is not this component's problem to show a loading state
+  // for -- (mobile)/layout.tsx's auth guard already renders nothing at all
+  // until a session exists, so in practice this only matters in isolation
+  // (e.g. tests rendering HomePage directly, unauthenticated).
+  if (!token) {
+    return null;
+  }
+
+  if (error) {
+    return (
+      <div
+        role="alert"
+        className="flex items-center gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive"
+      >
+        <span>Couldn&apos;t load your sent vehicles.</span>
+        <button type="button" className="font-medium underline" onClick={() => setAttempt((n) => n + 1)}>
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  if (items === null) {
+    return <p className="text-sm text-muted-foreground">Loading…</p>;
+  }
+
+  if (items.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="space-y-2">
+      <h2 className="text-sm font-medium text-muted-foreground">Your sent vehicles</h2>
+      <div className="grid gap-2">
+        {items.map((vehicle) => (
+          <Button
+            key={vehicle.id}
+            variant="outline"
+            className="h-auto flex-col items-start gap-0.5 py-3"
+            onClick={() => router.push(`/my-vehicles/${vehicle.id}`)}
+          >
+            <div className="flex w-full items-center justify-between">
+              <span>{sentVehicleTitle(vehicle)}</span>
+              <span className="text-xs text-muted-foreground">{vehicle.vin}</span>
+            </div>
+            <span className="text-xs text-muted-foreground">
+              {vehicle.partsCount} part{vehicle.partsCount === 1 ? "" : "s"} ·{" "}
+              {vehicle.unassignedPhotosCount} photo{vehicle.unassignedPhotosCount === 1 ? "" : "s"} waiting on a
+              manager
+            </span>
+          </Button>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 export default function HomePage() {
@@ -44,7 +134,7 @@ export default function HomePage() {
       </div>
 
       {inProgress.length === 0 ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
+        <div className="flex flex-col items-center justify-center gap-2 py-8 text-center">
           <p className="font-medium">No vehicles in progress</p>
           <p className="text-sm text-muted-foreground">
             Tap &ldquo;New Vehicle&rdquo; to start an intake.
@@ -65,6 +155,8 @@ export default function HomePage() {
           ))}
         </div>
       )}
+
+      <SentVehiclesSection />
     </div>
   );
 }

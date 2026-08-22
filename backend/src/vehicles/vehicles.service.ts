@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { DataSource, FindOptionsWhere, In } from 'typeorm';
+import { DataSource, EntityManager, FindOptionsWhere, In } from 'typeorm';
 import { Part, PartStatus } from '../database/entities/part.entity';
 import { CrushStatus, Vehicle } from '../database/entities/vehicle.entity';
 import { VehiclePhoto } from '../database/entities/vehicle-photo.entity';
@@ -22,6 +22,11 @@ export interface VehicleListResult {
   total: number;
   page: number;
   pageSize: number;
+}
+
+export interface MyVehicleListItem extends Vehicle {
+  partsCount: number;
+  unassignedPhotosCount: number;
 }
 
 export interface IntakeResult {
@@ -90,6 +95,75 @@ export class VehiclesService {
     });
   }
 
+  /**
+   * The mobile home screen's "Your vehicles" list: every vehicle this
+   * worker (or manager/owner) personally sent through `intake()`, most
+   * recent first, with enough signal (parts created so far, raw photos
+   * still waiting on a manager to assign) to tell at a glance which ones
+   * still need photos or are just sitting unassigned.
+   */
+  async mine(
+    tenantId: string,
+    userId: string,
+    page: number,
+    pageSize: number,
+  ): Promise<{
+    items: MyVehicleListItem[];
+    total: number;
+    page: number;
+    pageSize: number;
+  }> {
+    return withTenantContext(this.dataSource, tenantId, async (manager) => {
+      const [vehicles, total] = await manager
+        .getRepository(Vehicle)
+        .findAndCount({
+          where: { tenantId, createdByUserId: userId },
+          order: { createdAt: 'DESC' },
+          skip: (page - 1) * pageSize,
+          take: pageSize,
+        });
+
+      const ids = vehicles.map((v) => v.id);
+      const [partCounts, photoCounts] = ids.length
+        ? await Promise.all([
+            manager
+              .getRepository(Part)
+              .createQueryBuilder('part')
+              .select('part.vehicleId', 'vehicleId')
+              .addSelect('COUNT(*)', 'count')
+              .where('part.vehicleId IN (:...ids)', { ids })
+              .groupBy('part.vehicleId')
+              .getRawMany<{ vehicleId: string; count: string }>(),
+            manager
+              .getRepository(VehiclePhoto)
+              .createQueryBuilder('photo')
+              .select('photo.vehicleId', 'vehicleId')
+              .addSelect('COUNT(*)', 'count')
+              .where('photo.vehicleId IN (:...ids)', { ids })
+              .groupBy('photo.vehicleId')
+              .getRawMany<{ vehicleId: string; count: string }>(),
+          ])
+        : [[], []];
+      const partCountsByVehicle = new Map(
+        partCounts.map((c) => [c.vehicleId, Number(c.count)]),
+      );
+      const photoCountsByVehicle = new Map(
+        photoCounts.map((c) => [c.vehicleId, Number(c.count)]),
+      );
+
+      return {
+        items: vehicles.map((v) => ({
+          ...v,
+          partsCount: partCountsByVehicle.get(v.id) ?? 0,
+          unassignedPhotosCount: photoCountsByVehicle.get(v.id) ?? 0,
+        })),
+        total,
+        page,
+        pageSize,
+      };
+    });
+  }
+
   async detail(
     tenantId: string,
     vehicleId: string,
@@ -120,6 +194,7 @@ export class VehiclesService {
    */
   async intake(
     tenantId: string,
+    userId: string,
     dto: VehicleIntakeDto,
     files: Express.Multer.File[],
   ): Promise<IntakeResult> {
@@ -143,28 +218,64 @@ export class VehiclesService {
           trim: decoded?.trim ?? null,
           decodedRaw: decoded?.raw ?? null,
           intakeDraftId: dto.draftId,
+          createdByUserId: userId,
         }),
       );
 
-      for (const file of files) {
-        const [kind, photoId] = file.fieldname.split(':');
-        if (kind !== 'photo') continue;
-        const extension = resolveImageExtension(file.mimetype);
-        const relativePath = await this.storage.save(
-          `${tenantId}/${vehicle.id}/${photoId}.${extension}`,
-          file.buffer,
-        );
-        await manager.getRepository(VehiclePhoto).save(
-          manager.getRepository(VehiclePhoto).create({
-            tenantId,
-            vehicleId: vehicle.id,
-            url: relativePath,
-          }),
-        );
-      }
+      await this.savePhotos(manager, tenantId, vehicle.id, files);
 
       return { vehicleId: vehicle.id, duplicate: false };
     });
+  }
+
+  /**
+   * Lets a worker attach more raw photos to a vehicle they already sent,
+   * any time afterward -- e.g. they only had one part photographed when
+   * they synced, and come back later with the rest. Same multipart shape
+   * (`photo:{id}` fields) and storage/DB path as `intake()`'s own photo
+   * loop, just against an existing Vehicle instead of a brand-new one.
+   */
+  async addPhotos(
+    tenantId: string,
+    vehicleId: string,
+    files: Express.Multer.File[],
+  ): Promise<VehiclePhoto[]> {
+    return withTenantContext(this.dataSource, tenantId, async (manager) => {
+      const vehicle = await manager
+        .getRepository(Vehicle)
+        .findOne({ where: { id: vehicleId } });
+      if (!vehicle) {
+        throw new NotFoundException('Vehicle not found');
+      }
+      return this.savePhotos(manager, tenantId, vehicleId, files);
+    });
+  }
+
+  private async savePhotos(
+    manager: EntityManager,
+    tenantId: string,
+    vehicleId: string,
+    files: Express.Multer.File[],
+  ): Promise<VehiclePhoto[]> {
+    const saved: VehiclePhoto[] = [];
+    for (const file of files) {
+      const [kind, photoId] = file.fieldname.split(':');
+      if (kind !== 'photo') continue;
+      const extension = resolveImageExtension(file.mimetype);
+      const relativePath = await this.storage.save(
+        `${tenantId}/${vehicleId}/${photoId}.${extension}`,
+        file.buffer,
+      );
+      const photo = await manager.getRepository(VehiclePhoto).save(
+        manager.getRepository(VehiclePhoto).create({
+          tenantId,
+          vehicleId,
+          url: relativePath,
+        }),
+      );
+      saved.push(photo);
+    }
+    return saved;
   }
 
   async listPhotos(

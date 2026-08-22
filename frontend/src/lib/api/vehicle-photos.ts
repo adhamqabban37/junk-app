@@ -13,6 +13,29 @@ export function listVehiclePhotos(
   return authFetch<VehiclePhotoSummary[]>(`/vehicles/${vehicleId}/photos`, { token }, fetchImpl);
 }
 
+/**
+ * Lets a worker attach more raw photos to a vehicle they already sent, any
+ * time afterward -- not just at initial intake. Same `photo:{id}` field-name
+ * convention as the intake sync's own multipart body (sync.ts), so it can
+ * reuse the exact same on-device capture pipeline.
+ */
+export function addVehiclePhotos(
+  token: string,
+  vehicleId: string,
+  photos: { id: string; blob: Blob }[],
+  fetchImpl?: typeof fetch,
+): Promise<VehiclePhotoSummary[]> {
+  const formData = new FormData();
+  for (const photo of photos) {
+    formData.append(`photo:${photo.id}`, photo.blob, `${photo.id}.jpg`);
+  }
+  return authFetch<VehiclePhotoSummary[]>(
+    `/vehicles/${vehicleId}/photos`,
+    { token, method: "POST", body: formData },
+    fetchImpl,
+  );
+}
+
 export function assignVehiclePhotos(
   token: string,
   vehicleId: string,

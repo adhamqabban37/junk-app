@@ -27,17 +27,20 @@ import { ListVehiclesDto } from './dto/list-vehicles.dto';
 import { VehicleIntakeDto } from './dto/vehicle-intake.dto';
 import { VehiclesService } from './vehicles.service';
 
+// Any authenticated role can reach a worker-facing route below (mirrors
+// PartsController.uploadImage's shape) -- these override the class-level
+// MANAGER/OWNER-only restriction (RolesGuard reads handler metadata before
+// class metadata). Kept as a named constant since it's now used on several
+// handlers, not just `intake`.
+const ANY_ROLE = [UserRole.WORKER, UserRole.MANAGER, UserRole.OWNER];
+
 @UseGuards(RolesGuard)
 @Roles(UserRole.MANAGER, UserRole.OWNER)
 @Controller('vehicles')
 export class VehiclesController {
   constructor(private readonly vehiclesService: VehiclesService) {}
 
-  // Overrides the class-level MANAGER/OWNER-only restriction (RolesGuard
-  // reads handler metadata before class metadata) -- this is the mobile
-  // worker's own sync endpoint, same "any authenticated role" shape as
-  // PartsController.uploadImage.
-  @Roles(UserRole.WORKER, UserRole.MANAGER, UserRole.OWNER)
+  @Roles(...ANY_ROLE)
   @Post('intake')
   @UseInterceptors(AnyFilesInterceptor({ storage: memoryStorage() }))
   intake(
@@ -45,7 +48,12 @@ export class VehiclesController {
     @Body() dto: VehicleIntakeDto,
     @UploadedFiles() files: Express.Multer.File[],
   ) {
-    return this.vehiclesService.intake(user.tenantId, dto, files ?? []);
+    return this.vehiclesService.intake(
+      user.tenantId,
+      user.sub,
+      dto,
+      files ?? [],
+    );
   }
 
   @Get()
@@ -58,6 +66,21 @@ export class VehiclesController {
     );
   }
 
+  // The mobile home screen's "Your vehicles" list -- must be registered
+  // before the `:id` route below, or Nest would match the literal path
+  // "mine" as an `id` param instead.
+  @Roles(...ANY_ROLE)
+  @Get('mine')
+  mine(@CurrentUser() user: JwtPayload, @Query() query: ListVehiclesDto) {
+    return this.vehiclesService.mine(
+      user.tenantId,
+      user.sub,
+      query.page,
+      query.pageSize,
+    );
+  }
+
+  @Roles(...ANY_ROLE)
   @Get(':id')
   detail(
     @CurrentUser() user: JwtPayload,
@@ -66,6 +89,7 @@ export class VehiclesController {
     return this.vehiclesService.detail(user.tenantId, id);
   }
 
+  @Roles(...ANY_ROLE)
   @Get(':id/photos')
   listPhotos(
     @CurrentUser() user: JwtPayload,
@@ -74,6 +98,20 @@ export class VehiclesController {
     return this.vehiclesService.listPhotos(user.tenantId, id);
   }
 
+  // Lets a worker attach more raw photos to a vehicle they already sent,
+  // any time afterward, rather than only ever at initial intake.
+  @Roles(...ANY_ROLE)
+  @Post(':id/photos')
+  @UseInterceptors(AnyFilesInterceptor({ storage: memoryStorage() }))
+  addPhotos(
+    @CurrentUser() user: JwtPayload,
+    @Param('id', ParseUUIDPipe) id: string,
+    @UploadedFiles() files: Express.Multer.File[],
+  ) {
+    return this.vehiclesService.addPhotos(user.tenantId, id, files ?? []);
+  }
+
+  @Roles(...ANY_ROLE)
   @Get(':id/photos/:photoId/file')
   async photoFile(
     @CurrentUser() user: JwtPayload,

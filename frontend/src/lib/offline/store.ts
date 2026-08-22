@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { randomUUID } from "@/lib/uuid";
 import { deleteDraft, listDrafts, putDraft } from "./db";
 import type { DraftPhoto, VehicleDraft, VinEntryMethod } from "./types";
 
@@ -54,7 +55,7 @@ export const useIntakeStore = create<IntakeState>((set, get) => {
     // killed and relaunched mid-sync (Phase 3 planning-gate finding).
     createDraft: async () => {
       const draft: VehicleDraft = {
-        id: crypto.randomUUID(),
+        id: randomUUID(),
         vin: null,
         vinEntryMethod: null,
         decoded: null,

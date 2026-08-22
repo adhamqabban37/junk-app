@@ -55,6 +55,10 @@ export class Vehicle {
   })
   intakeDraftId!: string | null;
 
+  /** The worker/manager whose intake sync created this vehicle -- null for seeded vehicles or any future non-worker creation path. Powers the mobile "my vehicles" list; see VehiclesService.mine(). */
+  @Column({ name: 'created_by_user_id', type: 'uuid', nullable: true })
+  createdByUserId!: string | null;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt!: Date;
 }

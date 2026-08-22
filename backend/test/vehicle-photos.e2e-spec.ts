@@ -194,11 +194,16 @@ describe('Vehicle photos: list / file / assign (e2e)', () => {
       .expect(401);
   });
 
-  it('rejects a worker (manager/owner only)', async () => {
+  it('lets a worker view a vehicle\'s photos (their own "sent vehicles" flow), but not assign them -- that stays manager/owner only', async () => {
     const token = await loginWorker();
     await request(app.getHttpServer())
       .get(`/vehicles/${vehicle.id}/photos`)
       .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    await request(app.getHttpServer())
+      .post(`/vehicles/${vehicle.id}/photos/assign`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ photoIds: [randomUUID()], taxonomyId: taxonomy.id })
       .expect(403);
   });
 
@@ -323,4 +328,52 @@ describe('Vehicle photos: list / file / assign (e2e)', () => {
     }, 20000);
     expect(fakeGemini.analyzePartImage).toHaveBeenCalled();
   }, 25000);
+
+  describe('POST /vehicles/:id/photos (add more, after initial intake)', () => {
+    it('rejects unauthenticated requests', async () => {
+      await request(app.getHttpServer())
+        .post(`/vehicles/${vehicle.id}/photos`)
+        .attach('photo:p1', Buffer.from('bytes'), 'p1.jpg')
+        .expect(401);
+    });
+
+    it('404s for a vehicle id that does not exist', async () => {
+      const token = await loginWorker();
+      await request(app.getHttpServer())
+        .post(`/vehicles/${randomUUID()}/photos`)
+        .set('Authorization', `Bearer ${token}`)
+        .attach('photo:p1', Buffer.from('bytes'), 'p1.jpg')
+        .expect(404);
+    });
+
+    it('lets a worker append more raw photos to a vehicle already sent, without touching its existing ones', async () => {
+      const existing = await createPhoto(vehicle.id, 'already-there');
+      const token = await loginWorker();
+
+      const res = await request(app.getHttpServer())
+        .post(`/vehicles/${vehicle.id}/photos`)
+        .set('Authorization', `Bearer ${token}`)
+        .attach('photo:new-1', Buffer.from('new-bytes-1'), 'new-1.jpg')
+        .attach('photo:new-2', Buffer.from('new-bytes-2'), 'new-2.jpg')
+        .expect(201);
+
+      const created = res.body as { id: string; vehicleId: string }[];
+      expect(created).toHaveLength(2);
+
+      const allPhotos = await withTenantContext(dataSource, tenant.id, (m) =>
+        m
+          .getRepository(VehiclePhoto)
+          .find({ where: { vehicleId: vehicle.id } }),
+      );
+      expect(allPhotos.map((p) => p.id).sort()).toEqual(
+        [existing.id, ...created.map((c) => c.id)].sort(),
+      );
+
+      const listRes = await request(app.getHttpServer())
+        .get(`/vehicles/${vehicle.id}/photos`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+      expect(listRes.body as unknown[]).toHaveLength(3);
+    });
+  });
 });

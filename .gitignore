@@ -33,3 +33,7 @@ yarn-error.log*
 Thumbs.db
 
 # Docker volumes are managed by Docker, not git
+
+# Local-disk MVP file storage (LocalFileStorage) -- real uploaded photo
+# bytes from dev/manual testing, not source
+backend/uploads/

@@ -156,6 +156,7 @@ describe('Vehicles intake (e2e)', () => {
       year: 2005,
       trim: 'EX',
       intakeDraftId: draftId,
+      createdByUserId: worker.id,
     });
     expect(vehicle.decodedRaw).toEqual({ source: 'nhtsa' });
 
@@ -216,5 +217,72 @@ describe('Vehicles intake (e2e)', () => {
         .find({ where: { vehicleId: body.vehicleId } }),
     );
     expect(photos).toHaveLength(0);
+  });
+
+  describe('GET /vehicles/mine', () => {
+    let otherWorker: User;
+    const OTHER_WORKER_PIN = '2027';
+
+    beforeAll(async () => {
+      otherWorker = await withTenantContext(dataSource, tenant.id, (m) =>
+        m.getRepository(User).save(
+          m.getRepository(User).create({
+            tenantId: tenant.id,
+            role: UserRole.WORKER,
+            name: 'Other Intake Test Worker',
+            pinHash: bcrypt.hashSync(OTHER_WORKER_PIN, 4),
+          }),
+        ),
+      );
+    });
+
+    it('rejects unauthenticated requests', async () => {
+      await request(app.getHttpServer()).get('/vehicles/mine').expect(401);
+    });
+
+    it("only returns the caller's own vehicles, never another worker's, with parts/photo counts", async () => {
+      const token = await loginWorker();
+      const otherToken = (
+        await request(app.getHttpServer())
+          .post('/auth/login/pin')
+          .send({
+            tenantId: tenant.id,
+            userId: otherWorker.id,
+            pin: OTHER_WORKER_PIN,
+          })
+          .expect(200)
+      ).body as { accessToken: string };
+
+      const mine = await buildRequest(token, `draft-mine-${Date.now()}`, {
+        vin: 'MINEWORKERVIN1234',
+        photoCount: 2,
+      }).expect(201);
+      await buildRequest(otherToken.accessToken, `draft-other-${Date.now()}`, {
+        vin: 'OTHERWORKERVIN123',
+        photoCount: 1,
+      }).expect(201);
+
+      const res = await request(app.getHttpServer())
+        .get('/vehicles/mine')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+      const body = res.body as {
+        items: {
+          id: string;
+          vin: string;
+          unassignedPhotosCount: number;
+          partsCount: number;
+        }[];
+      };
+      expect(body.items.some((v) => v.vin === 'OTHERWORKERVIN123')).toBe(false);
+      const own = body.items.find(
+        (v) => v.id === (mine.body as { vehicleId: string }).vehicleId,
+      );
+      expect(own).toMatchObject({
+        vin: 'MINEWORKERVIN1234',
+        unassignedPhotosCount: 2,
+        partsCount: 0,
+      });
+    });
   });
 });

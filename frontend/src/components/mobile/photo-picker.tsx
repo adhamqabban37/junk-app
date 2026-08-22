@@ -23,8 +23,13 @@ export function PhotoPicker({ inputId, label, onFileSelected }: PhotoPickerProps
   const [dragOver, setDragOver] = useState(false);
 
   function handleFiles(files: FileList | null) {
-    const file = files?.[0];
-    if (file) onFileSelected(file);
+    if (!files) return;
+    // One call per file, not a batch callback: every caller already knows
+    // how to add a single photo (addPhoto()), so looping here lets a
+    // multi-select or multi-file drop reuse that as-is.
+    for (const file of files) {
+      onFileSelected(file);
+    }
   }
 
   return (
@@ -56,6 +61,7 @@ export function PhotoPicker({ inputId, label, onFileSelected }: PhotoPickerProps
         id={inputId}
         type="file"
         accept="image/*"
+        multiple
         // Visually hidden but still focusable/keyboard-accessible (not
         // display:none) -- written out explicitly rather than relying on a
         // "sr-only" utility class, which this project's Tailwind v4 setup
