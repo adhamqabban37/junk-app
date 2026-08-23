@@ -23,7 +23,9 @@ That constraint then surfaced **9 e2e test files** that created a taxonomy row w
 
 **Environmental gotcha hit and fixed along the way, worth remembering:** killing a background test run via the task-stop mechanism does not reliably kill the underlying `node`/`jest`/`next` child process tree on this Windows machine (same class of issue as the orphaned-process incident documented in part 3 below) -- leftover BullMQ/ioredis connections from orphaned processes caused several minutes of confusing, non-reproducible `waitFor` timeouts across unrelated e2e files that looked like flaky infrastructure but were actually zombie workers racing for jobs with dead DB connections. Fixed by explicitly killing orphaned `node.exe` PIDs (`Get-CimInstance Win32_Process` + `Stop-Process`) and restarting the Redis container before trusting any e2e timing result again.
 
-**Nothing from today is committed or pushed yet** -- all of Phases 1-5 (this session's work plus the prior sessions' uncommitted Phase 1-4 work) sit together in the working tree.
+**Committed and pushed:** all of Phases 1-5 (this session's work plus the prior sessions' uncommitted Phase 1-4 work) landed in one commit, `f92cd2b` ("Ship Phases 3-5 of photo->part identity..."), pushed straight to `origin/main` (no PR -- user asked directly). 63 files, +5200/-317.
+
+**Dev environment left running for the user, confirmed healthy:** `docker compose` (postgres + redis) was already up; started `npm run start:dev` (backend, port 3001) and `npm run dev:frontend` (Next.js/Turbopack, port 3000) in the background and confirmed both serve `200` via `curl` after startup, backend's Nest route table logged cleanly (including the new `/parts/:id/merge` route), frontend's Turbopack build reported `Ready`.
 
 ## Session 2026-08-22 (part 4): photo -> part identity problem -- validated research doc, shipped Phase 1 (grading aggregation). Read this first next time.
 
