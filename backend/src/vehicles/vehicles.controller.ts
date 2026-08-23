@@ -22,7 +22,9 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { UserRole } from '../database/entities';
+import { AddVehiclePhotosDto } from './dto/add-vehicle-photos.dto';
 import { AssignVehiclePhotosDto } from './dto/assign-vehicle-photos.dto';
+import { CreateManualPartDto } from './dto/create-manual-part.dto';
 import { ListVehiclesDto } from './dto/list-vehicles.dto';
 import { VehicleIntakeDto } from './dto/vehicle-intake.dto';
 import { VehiclesService } from './vehicles.service';
@@ -106,9 +108,15 @@ export class VehiclesController {
   addPhotos(
     @CurrentUser() user: JwtPayload,
     @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: AddVehiclePhotosDto,
     @UploadedFiles() files: Express.Multer.File[],
   ) {
-    return this.vehiclesService.addPhotos(user.tenantId, id, files ?? []);
+    return this.vehiclesService.addPhotos(
+      user.tenantId,
+      id,
+      files ?? [],
+      dto.section,
+    );
   }
 
   @Roles(...ANY_ROLE)
@@ -139,6 +147,23 @@ export class VehiclesController {
       user.tenantId,
       id,
       dto.photoIds,
+      dto.taxonomyId,
+    );
+  }
+
+  // Manager/owner only (class-level default) -- lets a manager add a part
+  // the yard knows it has but that has no photo at all, e.g. an alternator
+  // still inside an unphotographed engine bay.
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/parts')
+  createManualPart(
+    @CurrentUser() user: JwtPayload,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CreateManualPartDto,
+  ) {
+    return this.vehiclesService.createManualPart(
+      user.tenantId,
+      id,
       dto.taxonomyId,
     );
   }

@@ -28,6 +28,8 @@ function makeMyVehicle(overrides: Partial<MyVehicleListItem> = {}): MyVehicleLis
     createdAt: new Date().toISOString(),
     partsCount: 0,
     unassignedPhotosCount: 2,
+    latestGrade: null,
+    firstPhotoId: null,
     ...overrides,
   };
 }

@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
+import { PartsModule } from '../parts/parts.module';
 import { AiAnalysisProcessor } from './ai-analysis.processor';
 import { AiAnalysisService } from './ai-analysis.service';
+import { VehicleAnalysisProcessor } from './vehicle-analysis.processor';
 import { GeminiService } from './gemini.service';
 import { CorrectionsController } from './corrections.controller';
 import { CorrectionsService } from './corrections.service';
@@ -14,11 +16,13 @@ import { CorrectionsService } from './corrections.service';
 // an unhandled 'error' event that crashed whatever unrelated test file
 // happened to be running at that moment.
 @Module({
+  imports: [PartsModule],
   controllers: [CorrectionsController],
   providers: [
     GeminiService,
     AiAnalysisService,
     AiAnalysisProcessor,
+    VehicleAnalysisProcessor,
     CorrectionsService,
   ],
 })

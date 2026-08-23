@@ -1,4 +1,11 @@
-import { IsNotEmpty, IsOptional, IsString, Length } from 'class-validator';
+import {
+  IsEnum,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Length,
+} from 'class-validator';
+import { VehiclePhotoSection } from '../../database/entities/vehicle-photo.entity';
 
 /**
  * multipart/form-data body fields sent by `buildIntakeFormData()`
@@ -27,4 +34,10 @@ export class VehicleIntakeDto {
 
   @IsString()
   decoded!: string;
+
+  // Applies to every photo in this batch -- optional, never required (see
+  // VehiclePhotoSection's own doc comment for why this stays batch-level).
+  @IsOptional()
+  @IsEnum(VehiclePhotoSection)
+  section?: VehiclePhotoSection;
 }

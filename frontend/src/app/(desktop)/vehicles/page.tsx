@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useAuthSession } from "@/lib/auth-session";
 import { listVehicles, type CrushStatus, type VehicleListItem } from "@/lib/api/vehicles";
+import { VehiclePhotoThumb } from "@/components/desktop/vehicle-photo-thumb";
+import { GradeBadge } from "@/components/desktop/grade-badge";
 
 const CRUSH_STATUS_OPTIONS: { value: CrushStatus | ""; label: string }[] = [
   { value: "", label: "All statuses" },
@@ -89,22 +91,39 @@ export default function VehiclesPage() {
           </p>
         </div>
       ) : (
-        <div className="grid gap-3">
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
           {items.map((vehicle) => (
             <Link
               key={vehicle.id}
               href={`/vehicles/${vehicle.id}`}
               data-testid={`vehicle-row-${vehicle.id}`}
-              className="block rounded-xl border border-border p-4 transition-colors hover:bg-muted/50"
+              className="group flex flex-col overflow-hidden rounded-xl border border-border transition-colors hover:border-primary/40 hover:bg-muted/30"
             >
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <p className="font-medium">{vehicleTitle(vehicle)}</p>
-                  <p className="mt-1 text-sm text-muted-foreground">{vehicle.vin}</p>
+              {vehicle.firstPhotoId ? (
+                <VehiclePhotoThumb
+                  token={token as string}
+                  vehicleId={vehicle.id}
+                  photoId={vehicle.firstPhotoId}
+                  className="aspect-[4/3] rounded-none"
+                />
+              ) : (
+                <div className="flex aspect-[4/3] items-center justify-center bg-muted text-xs text-muted-foreground">
+                  No photo yet
                 </div>
-                <div className="flex items-center gap-4 text-sm">
-                  <span className="capitalize">{vehicle.crushStatus}</span>
-                  <span className="rounded-full bg-muted px-2 py-0.5 font-medium">{vehicle.partsCount}</span>
+              )}
+              <div className="flex flex-1 flex-col gap-2 p-3">
+                <div>
+                  <p className="font-medium leading-tight">{vehicleTitle(vehicle)}</p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">{vehicle.vin}</p>
+                </div>
+                <div className="mt-auto flex flex-wrap items-center gap-1.5">
+                  <GradeBadge grade={vehicle.latestGrade} />
+                  <span className="rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">
+                    {vehicle.partsCount} part{vehicle.partsCount === 1 ? "" : "s"}
+                  </span>
+                  <span className="rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium capitalize text-muted-foreground">
+                    {vehicle.crushStatus}
+                  </span>
                 </div>
               </div>
             </Link>

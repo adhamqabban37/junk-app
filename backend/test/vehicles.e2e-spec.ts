@@ -3,6 +3,7 @@ import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import request from 'supertest';
 import * as bcrypt from 'bcryptjs';
+import { randomUUID } from 'crypto';
 import { DataSource } from 'typeorm';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/configure-app';
@@ -47,7 +48,7 @@ describe('Vehicles (e2e)', () => {
     const taxonomyRepo = dataSource.getRepository(PartTaxonomy);
     taxonomy = await taxonomyRepo.save(
       taxonomyRepo.create({
-        name: 'Door',
+        name: `Door ${randomUUID()}`,
         category: 'Body',
         isQuickPick: false,
       }),

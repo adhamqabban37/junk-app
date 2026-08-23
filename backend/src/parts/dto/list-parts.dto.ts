@@ -1,5 +1,5 @@
 import { Transform, Type } from 'class-transformer';
-import { IsEnum, IsInt, IsOptional, Max, Min } from 'class-validator';
+import { IsEnum, IsInt, IsOptional, IsUUID, Max, Min } from 'class-validator';
 import { PartStatus } from '../../database/entities/part.entity';
 
 export class ListPartsDto {
@@ -9,6 +9,11 @@ export class ListPartsDto {
   )
   @IsEnum(PartStatus, { each: true })
   status?: PartStatus[];
+
+  /** Scopes results to one vehicle -- powers the vehicle detail screen's Parts section (grade/approve per part, without a second, duplicated query shape). */
+  @IsOptional()
+  @IsUUID()
+  vehicleId?: string;
 
   @IsOptional()
   @Type(() => Number)

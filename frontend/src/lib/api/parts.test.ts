@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { approvePart, exportPartsCsvUrl, getPart, listParts } from "./parts";
+import { approvePart, exportPartsCsvUrl, getPart, listParts, mergeParts } from "./parts";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -30,6 +30,18 @@ describe("approvePart", () => {
     const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toContain("/parts/p1/approve");
     expect(options.method).toBe("POST");
+  });
+});
+
+describe("mergeParts", () => {
+  it("posts sourcePartIds as a JSON body to the merge endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ id: "target" }));
+    const result = await mergeParts("token", "target", ["a", "b"], fetchMock);
+    expect(result).toMatchObject({ id: "target" });
+    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/parts/target/merge");
+    expect(options.method).toBe("POST");
+    expect(JSON.parse(options.body as string)).toEqual({ sourcePartIds: ["a", "b"] });
   });
 });
 

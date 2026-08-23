@@ -3,10 +3,12 @@ import 'dotenv/config';
 import { promises as fs } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
 import { AiAnalysisService } from '../src/ai/ai-analysis.service';
 import { GeminiRequestError, GeminiService } from '../src/ai/gemini.service';
+import { PartsService } from '../src/parts/parts.service';
 import { LocalFileStorage } from '../src/storage/local-file-storage';
 import { ENTITIES } from '../src/database/entities.list';
 import {
@@ -83,6 +85,10 @@ describe('AiAnalysisService (e2e)', () => {
       dataSource,
       fakeGemini as unknown as GeminiService,
       storage,
+      // Only analyzeVehicle() (not exercised by this file -- see
+      // vehicle-analysis.e2e-spec.ts for that) touches partsService, so an
+      // empty stub is enough to satisfy the constructor here.
+      {} as PartsService,
       new ConfigService({ GEMINI_MODEL: MODEL_VERSION }),
     );
 
@@ -94,7 +100,7 @@ describe('AiAnalysisService (e2e)', () => {
     const taxonomyRepo = dataSource.getRepository(PartTaxonomy);
     taxonomy = await taxonomyRepo.save(
       taxonomyRepo.create({
-        name: 'Alternator',
+        name: `Alternator ${randomUUID()}`,
         category: 'Electrical',
         isQuickPick: false,
       }),

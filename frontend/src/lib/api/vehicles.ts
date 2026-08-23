@@ -2,6 +2,15 @@ import { authFetch } from "../api";
 
 export type CrushStatus = "active" | "stripped" | "crushed";
 
+export type VehicleGrade = "A" | "B" | "C";
+
+/** The vehicle's current whole-vehicle condition grade -- distinct from a Part's own AI analysis. Null status/grade fields mean grading hasn't completed yet. */
+export interface VehicleGradeSummary {
+  grade: VehicleGrade | null;
+  status: "pending" | "complete" | "failed";
+  photoCount: number;
+}
+
 export interface VehicleListItem {
   id: string;
   vin: string;
@@ -12,6 +21,8 @@ export interface VehicleListItem {
   crushStatus: CrushStatus;
   createdAt: string;
   partsCount: number;
+  latestGrade: VehicleGradeSummary | null;
+  firstPhotoId: string | null;
 }
 
 export interface VehicleListResult {
@@ -21,8 +32,19 @@ export interface VehicleListResult {
   pageSize: number;
 }
 
+export interface VehicleAnalysisDetail {
+  id: string;
+  grade: VehicleGrade | null;
+  damageCodes: string[];
+  confidence: number | string | null;
+  photoCount: number;
+  status: "pending" | "complete" | "failed";
+  createdAt: string;
+}
+
 export interface VehicleDetail extends VehicleListItem {
   parts: Array<{ id: string; status: string; taxonomyId: string; createdAt: string }>;
+  latestVehicleAnalysis: VehicleAnalysisDetail | null;
 }
 
 export interface MyVehicleListItem extends VehicleListItem {
@@ -64,4 +86,23 @@ export function listMyVehicles(
 
 export function getVehicle(token: string, id: string, fetchImpl?: typeof fetch): Promise<VehicleDetail> {
   return authFetch<VehicleDetail>(`/vehicles/${id}`, { token }, fetchImpl);
+}
+
+/** Manually adds a Part with no photo -- e.g. an alternator that's inside an unphotographed engine bay. Starts at needs_manual_grading; no AI job runs since there's no image to send Gemini. */
+export function createManualPart(
+  token: string,
+  vehicleId: string,
+  taxonomyId: string,
+  fetchImpl?: typeof fetch,
+): Promise<{ partId: string }> {
+  return authFetch<{ partId: string }>(
+    `/vehicles/${vehicleId}/parts`,
+    {
+      token,
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ taxonomyId }),
+    },
+    fetchImpl,
+  );
 }

@@ -3,6 +3,7 @@ import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import request from 'supertest';
 import * as bcrypt from 'bcryptjs';
+import { randomUUID } from 'crypto';
 import { DataSource } from 'typeorm';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/configure-app';
@@ -30,6 +31,8 @@ describe('Parts listing/detail/approve (e2e)', () => {
   let vehicle: Vehicle;
   let reviewPart: Part;
   let approvedPart: Part;
+  let multiPhotoPart: Part;
+  let multiPhotoWorstAnalysis: AiAnalysis;
   const MANAGER_PASSWORD = 'parts-listing-password';
   const WORKER_PIN = '3571';
 
@@ -50,7 +53,7 @@ describe('Parts listing/detail/approve (e2e)', () => {
     const taxonomyRepo = dataSource.getRepository(PartTaxonomy);
     taxonomy = await taxonomyRepo.save(
       taxonomyRepo.create({
-        name: 'Alternator',
+        name: `Alternator ${randomUUID()}`,
         category: 'Electrical',
         isQuickPick: false,
       }),
@@ -136,6 +139,74 @@ describe('Parts listing/detail/approve (e2e)', () => {
         }),
       ),
     );
+
+    // Two photos of the same Part (e.g. via a manual multi-select assign),
+    // graded independently -- one clean angle (A), one showing real damage
+    // (C). The Part's displayed grade must reflect the worse of the two,
+    // not whichever image happened to be graded most recently.
+    multiPhotoPart = await withTenantContext(dataSource, tenant.id, (m) =>
+      m.getRepository(Part).save(
+        m.getRepository(Part).create({
+          tenantId: tenant.id,
+          vehicleId: vehicle.id,
+          taxonomyId: taxonomy.id,
+          status: PartStatus.PENDING_REVIEW,
+        }),
+      ),
+    );
+    const cleanImage = await withTenantContext(dataSource, tenant.id, (m) =>
+      m.getRepository(PartImage).save(
+        m.getRepository(PartImage).create({
+          tenantId: tenant.id,
+          partId: multiPhotoPart.id,
+          url: 'clean-angle.jpg',
+          qualityFlags: null,
+        }),
+      ),
+    );
+    const damagedImage = await withTenantContext(dataSource, tenant.id, (m) =>
+      m.getRepository(PartImage).save(
+        m.getRepository(PartImage).create({
+          tenantId: tenant.id,
+          partId: multiPhotoPart.id,
+          url: 'damaged-angle.jpg',
+          qualityFlags: null,
+        }),
+      ),
+    );
+    // Saved older-first, graded-worse-second -- proves the aggregation
+    // picks the worst grade, not just the most recently created row.
+    await withTenantContext(dataSource, tenant.id, (m) =>
+      m.getRepository(AiAnalysis).save(
+        m.getRepository(AiAnalysis).create({
+          tenantId: tenant.id,
+          partId: multiPhotoPart.id,
+          partImageId: cleanImage.id,
+          modelVersion: 'gemini-2.0-flash',
+          grade: AiGrade.A,
+          damageCodes: ['scratch'],
+          confidence: 0.9,
+          status: AiAnalysisStatus.COMPLETE,
+        }),
+      ),
+    );
+    multiPhotoWorstAnalysis = await withTenantContext(
+      dataSource,
+      tenant.id,
+      (m) =>
+        m.getRepository(AiAnalysis).save(
+          m.getRepository(AiAnalysis).create({
+            tenantId: tenant.id,
+            partId: multiPhotoPart.id,
+            partImageId: damagedImage.id,
+            modelVersion: 'gemini-2.0-flash',
+            grade: AiGrade.C,
+            damageCodes: ['rust'],
+            confidence: 0.6,
+            status: AiAnalysisStatus.COMPLETE,
+          }),
+        ),
+    );
   });
 
   afterAll(async () => {
@@ -189,15 +260,61 @@ describe('Parts listing/detail/approve (e2e)', () => {
       }>;
       total: number;
     };
-    expect(body.total).toBe(2);
+    expect(body.total).toBe(3);
     const found = body.items.find((p) => p.id === reviewPart.id);
-    expect(found?.taxonomyName).toBe('Alternator');
+    expect(found?.taxonomyName).toBe(taxonomy.name);
     expect(found?.vehicle.vin).toBe('PARTSLISTVIN1234');
     expect(found?.latestAnalysis?.grade).toBe('C');
     expect(Number(found?.latestAnalysis?.confidence)).toBeCloseTo(0.4);
 
     const approved = body.items.find((p) => p.id === approvedPart.id);
     expect(approved?.latestAnalysis).toBeNull();
+  });
+
+  it("a Part with multiple graded photos shows the worst grade and every photo's damage codes, not just the latest photo's", async () => {
+    const token = await loginManager();
+    const res = await request(app.getHttpServer())
+      .get('/parts')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const body = res.body as {
+      items: Array<{
+        id: string;
+        latestAnalysis: {
+          id: string;
+          grade: string;
+          damageCodes: string[];
+          confidence: string | number;
+        } | null;
+      }>;
+    };
+    const found = body.items.find((p) => p.id === multiPhotoPart.id);
+    // Worse of the two grades (C beats A), from the analysis that
+    // actually produced it -- confirms the "controlling" row is real,
+    // not a synthesized average, so correction-recording still has a
+    // valid AiAnalysis id to attach to.
+    expect(found?.latestAnalysis?.id).toBe(multiPhotoWorstAnalysis.id);
+    expect(found?.latestAnalysis?.grade).toBe('C');
+    expect(Number(found?.latestAnalysis?.confidence)).toBeCloseTo(0.6);
+    // Union of both photos' damage codes, not just the controlling row's.
+    expect(found?.latestAnalysis?.damageCodes.sort()).toEqual([
+      'rust',
+      'scratch',
+    ]);
+
+    const detailRes = await request(app.getHttpServer())
+      .get(`/parts/${multiPhotoPart.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    const detail = detailRes.body as {
+      latestAnalysis: { grade: string; damageCodes: string[] } | null;
+    };
+    expect(detail.latestAnalysis?.grade).toBe('C');
+    expect(detail.latestAnalysis?.damageCodes.sort()).toEqual([
+      'rust',
+      'scratch',
+    ]);
   });
 
   it('filters by status', async () => {
@@ -221,7 +338,7 @@ describe('Parts listing/detail/approve (e2e)', () => {
 
     expect(res.body).toMatchObject({
       id: reviewPart.id,
-      taxonomyName: 'Alternator',
+      taxonomyName: taxonomy.name,
     });
     expect((res.body as { photos: unknown[] }).photos).toHaveLength(1);
   });

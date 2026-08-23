@@ -17,6 +17,7 @@ function makePart(i: number): PartListItem {
     taxonomyName: `Part ${i}`,
     vehicle: { id: "v1", vin: `VIN${i.toString().padStart(10, "0")}`, make: "Honda", model: "Accord", year: 2005 },
     photosCount: 1,
+    firstImageId: null,
     latestAnalysis: null,
   };
 }

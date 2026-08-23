@@ -3,6 +3,7 @@ import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import request from 'supertest';
 import * as bcrypt from 'bcryptjs';
+import { randomUUID } from 'crypto';
 import { DataSource } from 'typeorm';
 import { AppModule } from '../src/app.module';
 import {
@@ -50,7 +51,7 @@ describe('Corrections (e2e)', () => {
     const taxonomyRepo = dataSource.getRepository(PartTaxonomy);
     taxonomy = await taxonomyRepo.save(
       taxonomyRepo.create({
-        name: 'Radiator',
+        name: `Radiator ${randomUUID()}`,
         category: 'Cooling',
         isQuickPick: false,
       }),

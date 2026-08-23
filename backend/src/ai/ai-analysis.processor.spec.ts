@@ -36,7 +36,19 @@ describe('AiAnalysisProcessor', () => {
       data: { tenantId: 'tenant-x', partImageId: 'image-y' },
     });
     await processor.process(job);
-    expect(analyzePartImage).toHaveBeenCalledWith('tenant-x', 'image-y');
+    expect(analyzePartImage).toHaveBeenCalledWith(
+      'tenant-x',
+      'image-y',
+      undefined,
+    );
+  });
+
+  it('process() passes force through for a re-grade job', async () => {
+    const job = makeJob({
+      data: { tenantId: 'tenant-x', partImageId: 'image-y', force: true },
+    });
+    await processor.process(job);
+    expect(analyzePartImage).toHaveBeenCalledWith('tenant-x', 'image-y', true);
   });
 
   it('onFailed does nothing when attempts remain (a transient retry, not exhaustion)', async () => {

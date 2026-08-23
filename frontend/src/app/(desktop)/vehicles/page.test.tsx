@@ -19,6 +19,8 @@ function makeVehicle(overrides: Partial<VehicleListItem> = {}): VehicleListItem 
     crushStatus: "active",
     createdAt: new Date().toISOString(),
     partsCount: 4,
+    latestGrade: null,
+    firstPhotoId: null,
     ...overrides,
   };
 }
@@ -58,7 +60,23 @@ describe("VehiclesPage", () => {
     const row = screen.getByTestId("vehicle-row-v1");
     expect(within(row).getByText(/2003 Honda Accord/i)).toBeInTheDocument();
     expect(within(row).getByText(/active/i)).toBeInTheDocument();
-    expect(within(row).getByText("4")).toBeInTheDocument();
+    expect(within(row).getByText(/4 parts/i)).toBeInTheDocument();
+  });
+
+  it("shows the vehicle's latest grade badge when graded", async () => {
+    vi.mocked(listVehicles).mockResolvedValue(
+      makeResult([makeVehicle({ latestGrade: { grade: "A", status: "complete", photoCount: 3 } })]),
+    );
+    render(<VehiclesPage />);
+    const row = await screen.findByTestId("vehicle-row-v1");
+    expect(within(row).getByText(/grade a/i)).toBeInTheDocument();
+  });
+
+  it("shows 'not graded yet' when the vehicle has no grade", async () => {
+    vi.mocked(listVehicles).mockResolvedValue(makeResult([makeVehicle({ latestGrade: null })]));
+    render(<VehiclesPage />);
+    const row = await screen.findByTestId("vehicle-row-v1");
+    expect(within(row).getByText(/not graded yet/i)).toBeInTheDocument();
   });
 
   it("filters by crush status", async () => {

@@ -8,7 +8,9 @@ import { Part } from './entities/part.entity';
 import { PricingHistory } from './entities/pricing-history.entity';
 import { Tenant } from './entities/tenant.entity';
 import { User } from './entities/user.entity';
+import { VehicleAnalysis } from './entities/vehicle-analysis.entity';
 import { VehicleImage } from './entities/vehicle-image.entity';
+import { VehiclePhotoSuggestion } from './entities/vehicle-photo-suggestion.entity';
 import { VehiclePhoto } from './entities/vehicle-photo.entity';
 import { Vehicle } from './entities/vehicle.entity';
 
@@ -19,10 +21,12 @@ export const ENTITIES = [
   Vehicle,
   VehicleImage,
   VehiclePhoto,
+  VehiclePhotoSuggestion,
   PartTaxonomy,
   Part,
   PartImage,
   AiAnalysis,
+  VehicleAnalysis,
   HumanCorrection,
   Embedding,
   PricingHistory,

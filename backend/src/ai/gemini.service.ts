@@ -1,8 +1,11 @@
 import { Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import type { z } from 'zod';
 import {
   GeminiPartAnalysis,
   GeminiPartAnalysisSchema,
+  GeminiVehicleAnalysis,
+  GeminiVehicleAnalysisSchema,
 } from './gemini-response.schema';
 
 export class GeminiRequestError extends Error {
@@ -18,6 +21,24 @@ Respond with strict JSON only, matching this shape exactly:
 "A" = like-new/minimal wear, "B" = visible wear or minor damage, "C" = significant damage.
 damage_codes should be short lowercase tags (e.g. "scratch", "rust", "crack", "dent").
 confidence reflects how certain you are in this grade given image quality.`;
+
+function buildVehicleGradingPrompt(candidateParts: string[]): string {
+  return `You are grading the overall condition of a vehicle at a salvage yard, from a batch of its photos. There may be as few as 1 photo -- grade based on whatever is shown, do not ask for more. The photos given are all of the same general area of the vehicle (e.g. all front-of-vehicle shots, or all driver-side shots) and are listed in the order they were captured -- photos taken back-to-back are more likely to be different angles of the very same physical part, not different parts.
+
+You are also identifying every distinct part visible in each individual photo -- this can be an exterior part (bumper, fender, headlight, etc.) or an interior part actually visible in the photo (seat, dashboard, steering wheel, etc.). A single photo often shows more than one of these at once (e.g. a 3/4 front angle can show a headlight, the front bumper, and a fender all together) -- identify all of them, not just the most obvious one. Only choose from this exact list of part names -- do not invent your own names, do not paraphrase:
+${candidateParts.map((p) => `- ${p}`).join('\n')}
+
+For each photo (0-based index), list one entry per distinct part from that list clearly visible in it -- a photo can produce several entries (one per part shown) or zero entries (e.g. an engine/undercarriage shot with nothing from the list visible, or too unclear/zoomed to tell). Never list the same part twice for the same photo.
+
+Additionally, assign every entry a group_id (a small integer, starting at 0): entries that show the SAME physical part instance -- e.g. two different angles of one specific fender -- must share the same group_id. Entries for a different physical instance of even the same part type (e.g. the driver-side headlight vs. the passenger-side headlight) must get different group_ids. Every entry needs a group_id, even one that's the only photo of its part -- just give it its own number nobody else shares. Only decide grouping using the photos given in this one request; you have no information about any other batch.
+
+Respond with strict JSON only, matching this shape exactly:
+{"grade": "A" | "B" | "C", "damage_codes": string[], "confidence": number between 0 and 1, "photo_suggestions": [{"photo_index": number, "suggested_part": string, "confidence": number, "group_id": number}]}
+"A" = like-new/minimal wear, "B" = visible wear or moderate damage, "C" = significant/severe damage.
+damage_codes should be short lowercase tags describing what you see (e.g. "rust", "collision damage", "missing panel", "flood damage").
+confidence (top-level) reflects how certain you are in the overall grade given image quality and how much of the vehicle the photos actually show -- fewer or lower-quality photos should lower confidence, not block a grade.
+photo_suggestions is a flat list across all photos -- omit a photo entirely rather than including it with no parts.`;
+}
 
 /**
  * Thin wrapper around Gemini's generateContent REST API (no SDK dependency —
@@ -47,6 +68,48 @@ export class GeminiService {
     imageBuffer: Buffer,
     mimeType: string,
   ): Promise<GeminiPartAnalysis> {
+    return this.callGemini(
+      GRADING_PROMPT,
+      [{ buffer: imageBuffer, mimeType }],
+      GeminiPartAnalysisSchema,
+    );
+  }
+
+  /**
+   * Same grading response shape as analyzePartImage plus a per-photo
+   * exterior-part suggestion, scored for a whole vehicle from 1+ photos in
+   * a single request (Gemini accepts multiple inline_data parts in one
+   * call) instead of one part from exactly one photo. `candidateParts` is
+   * the exact list of exterior-visual taxonomy names Gemini is allowed to
+   * suggest from -- any returned name not in that list is normalized to
+   * null (never trust a free-text match against real DB rows without
+   * verifying it).
+   */
+  async analyzeVehiclePhotos(
+    images: { buffer: Buffer; mimeType: string }[],
+    candidateParts: string[],
+  ): Promise<GeminiVehicleAnalysis> {
+    const result = await this.callGemini(
+      buildVehicleGradingPrompt(candidateParts),
+      images,
+      GeminiVehicleAnalysisSchema,
+    );
+    const candidateSet = new Set(candidateParts);
+    return {
+      ...result,
+      photo_suggestions: result.photo_suggestions.map((s) =>
+        s.suggested_part !== null && !candidateSet.has(s.suggested_part)
+          ? { ...s, suggested_part: null }
+          : s,
+      ),
+    };
+  }
+
+  private async callGemini<T>(
+    promptText: string,
+    images: { buffer: Buffer; mimeType: string }[],
+    schema: z.ZodType<T>,
+  ): Promise<T> {
     const apiKey = this.config.getOrThrow<string>('GEMINI_API_KEY');
     const model =
       this.config.get<string>('GEMINI_MODEL') ?? 'gemini-flash-latest';
@@ -61,13 +124,13 @@ export class GeminiService {
           contents: [
             {
               parts: [
-                { text: GRADING_PROMPT },
-                {
+                { text: promptText },
+                ...images.map((image) => ({
                   inline_data: {
-                    mime_type: mimeType,
-                    data: imageBuffer.toString('base64'),
+                    mime_type: image.mimeType,
+                    data: image.buffer.toString('base64'),
                   },
-                },
+                })),
               ],
             },
           ],
@@ -112,7 +175,7 @@ export class GeminiService {
       });
     }
 
-    const result = GeminiPartAnalysisSchema.safeParse(parsed);
+    const result = schema.safeParse(parsed);
     if (!result.success) {
       throw new GeminiRequestError(
         `Gemini response did not match the expected schema: ${result.error.message}`,

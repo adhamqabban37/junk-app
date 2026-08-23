@@ -2,13 +2,10 @@ import 'dotenv/config';
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import type { Job } from 'bullmq';
 import { AiAnalysisService } from './ai-analysis.service';
+import { AI_ANALYSIS_QUEUE, AiAnalysisJobData } from './ai-queue.constants';
 
-export interface AiAnalysisJobData {
-  tenantId: string;
-  partImageId: string;
-}
-
-export const AI_ANALYSIS_QUEUE = 'ai-analysis';
+export { AI_ANALYSIS_QUEUE };
+export type { AiAnalysisJobData };
 
 // Concurrency is read from process.env directly (not ConfigService) because
 // @Processor's options are evaluated at class-decoration time, before Nest's
@@ -29,6 +26,7 @@ export class AiAnalysisProcessor extends WorkerHost {
     await this.aiAnalysisService.analyzePartImage(
       job.data.tenantId,
       job.data.partImageId,
+      job.data.force,
     );
   }
 
@@ -39,12 +37,35 @@ export class AiAnalysisProcessor extends WorkerHost {
   @OnWorkerEvent('failed')
   async onFailed(job: Job<AiAnalysisJobData> | undefined): Promise<void> {
     if (!job) return;
+    // Was a silent gap: nothing logged *why* an attempt failed, only
+    // whether the whole retry budget was later exhausted -- see the same
+    // fix on VehicleAnalysisProcessor for the live case that surfaced this.
+    if (process.env.NODE_ENV !== 'test') {
+      console.error(
+        `[AiAnalysisProcessor] job ${job.id} attempt ${job.attemptsMade} failed: ${job.failedReason}`,
+      );
+    }
     const maxAttempts = job.opts.attempts ?? 1;
     if (job.attemptsMade >= maxAttempts) {
-      await this.aiAnalysisService.handleExhaustedRetries(
-        job.data.tenantId,
-        job.data.partImageId,
-      );
+      // BullMQ does not wrap event-handler callbacks in a try/catch of its
+      // own -- an error thrown here crashes the whole Node process, not
+      // just this job (confirmed live: an orphaned job's missing PartImage
+      // did exactly that before handleExhaustedRetries was hardened
+      // against it). Belt-and-suspenders: even a future, unrelated failure
+      // in here should never take the server down.
+      try {
+        await this.aiAnalysisService.handleExhaustedRetries(
+          job.data.tenantId,
+          job.data.partImageId,
+        );
+      } catch (error) {
+        if (process.env.NODE_ENV !== 'test') {
+          console.error(
+            '[AiAnalysisProcessor] handleExhaustedRetries failed',
+            error,
+          );
+        }
+      }
     }
   }
 

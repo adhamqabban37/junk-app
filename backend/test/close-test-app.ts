@@ -1,5 +1,6 @@
 import { INestApplication } from '@nestjs/common';
 import { AiAnalysisProcessor } from '../src/ai/ai-analysis.processor';
+import { VehicleAnalysisProcessor } from '../src/ai/vehicle-analysis.processor';
 
 /**
  * Every e2e spec file boots a full Nest app, meaning a full BullMQ Worker
@@ -28,6 +29,21 @@ export async function closeTestApp(app: INestApplication): Promise<void> {
     // AiAnalysisProcessor isn't in every test's module graph in principle;
     // in practice it always is (AiModule is always part of AppModule), but
     // this stays defensive rather than assuming.
+  }
+  try {
+    // Same rationale as above, for the second BullMQ Worker AiModule now
+    // also boots (vehicle-level grading). Missing this reintroduced the
+    // exact documented race -- confirmed live: adding VehicleAnalysisProcessor
+    // without closing it here made even unrelated, previously-stable specs
+    // (app.e2e-spec.ts's plain /health check, parts.e2e-spec.ts) start
+    // failing on the same "Connection is closed" ioredis error this
+    // function exists to prevent.
+    const vehicleProcessor = app.get(VehicleAnalysisProcessor, {
+      strict: false,
+    });
+    await vehicleProcessor.worker.close();
+  } catch {
+    // Defensive, same as above.
   }
   await app.close();
 }

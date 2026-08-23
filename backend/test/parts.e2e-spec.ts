@@ -6,6 +6,7 @@ import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import request from 'supertest';
 import * as bcrypt from 'bcryptjs';
+import { randomUUID } from 'crypto';
 import { DataSource } from 'typeorm';
 import { AppModule } from '../src/app.module';
 import { GeminiService } from '../src/ai/gemini.service';
@@ -88,7 +89,7 @@ describe('Parts image upload (e2e)', () => {
     const taxonomyRepo = dataSource.getRepository(PartTaxonomy);
     taxonomy = await taxonomyRepo.save(
       taxonomyRepo.create({
-        name: 'Water Pump',
+        name: `Water Pump ${randomUUID()}`,
         category: 'Cooling',
         isQuickPick: false,
       }),

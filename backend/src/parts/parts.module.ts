@@ -1,6 +1,6 @@
 import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
-import { AI_ANALYSIS_QUEUE } from '../ai/ai-analysis.processor';
+import { AI_ANALYSIS_QUEUE } from '../ai/ai-queue.constants';
 import { PartsController } from './parts.controller';
 import { PartsService } from './parts.service';
 

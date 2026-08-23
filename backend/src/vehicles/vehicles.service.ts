@@ -1,8 +1,20 @@
+import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, NotFoundException } from '@nestjs/common';
+import type { Queue } from 'bullmq';
 import { DataSource, EntityManager, FindOptionsWhere, In } from 'typeorm';
+import {
+  VEHICLE_ANALYSIS_QUEUE,
+  VehicleAnalysisJobData,
+} from '../ai/vehicle-analysis.processor';
 import { Part, PartStatus } from '../database/entities/part.entity';
+import { PartTaxonomy } from '../database/entities/part-taxonomy.entity';
+import { VehicleAnalysis } from '../database/entities/vehicle-analysis.entity';
 import { CrushStatus, Vehicle } from '../database/entities/vehicle.entity';
-import { VehiclePhoto } from '../database/entities/vehicle-photo.entity';
+import { VehiclePhotoSuggestion } from '../database/entities/vehicle-photo-suggestion.entity';
+import {
+  VehiclePhoto,
+  VehiclePhotoSection,
+} from '../database/entities/vehicle-photo.entity';
 import { withTenantContext } from '../database/tenant-context';
 import { PartsService } from '../parts/parts.service';
 import {
@@ -13,8 +25,28 @@ import {
 import { VehicleIntakeDto } from './dto/vehicle-intake.dto';
 import { parseDecoded } from './dto/vehicle-intake.schema';
 
+export interface VehiclePhotoSuggestionItem {
+  taxonomyId: string;
+  taxonomyName: string | null;
+  confidence: number;
+}
+
+export interface VehiclePhotoListItem extends VehiclePhoto {
+  /** Every distinct part Gemini identified in this photo -- a photo can show more than one (headlight + bumper + fender in one frame), so this is a list, not a single hint. */
+  suggestions: VehiclePhotoSuggestionItem[];
+}
+
+export interface VehicleGradeSummary {
+  grade: string | null;
+  status: string;
+  photoCount: number;
+}
+
 export interface VehicleListItem extends Vehicle {
   partsCount: number;
+  latestGrade: VehicleGradeSummary | null;
+  /** Earliest still-unassigned VehiclePhoto id, for a list-card thumbnail. Null once every photo has been assigned to a Part (consumed by assignPhotos()) or none were ever uploaded -- the UI shows a placeholder in that case. */
+  firstPhotoId: string | null;
 }
 
 export interface VehicleListResult {
@@ -27,6 +59,8 @@ export interface VehicleListResult {
 export interface MyVehicleListItem extends Vehicle {
   partsCount: number;
   unassignedPhotosCount: number;
+  latestGrade: VehicleGradeSummary | null;
+  firstPhotoId: string | null;
 }
 
 export interface IntakeResult {
@@ -45,7 +79,18 @@ export class VehiclesService {
     private readonly dataSource: DataSource,
     private readonly partsService: PartsService,
     private readonly storage: LocalFileStorage,
-  ) {}
+    @InjectQueue(VEHICLE_ANALYSIS_QUEUE)
+    private readonly vehicleAnalysisQueue: Queue<VehicleAnalysisJobData>,
+  ) {
+    // Same rationale as PartsService's aiQueue listener -- an unlistened
+    // 'error' event on a BullMQ Queue is a Node-level crash, not just a
+    // dropped log line.
+    this.vehicleAnalysisQueue.on('error', (error) => {
+      if (process.env.NODE_ENV !== 'test') {
+        console.error('[VehiclesService] vehicle analysis queue error', error);
+      }
+    });
+  }
 
   async list(
     tenantId: string,
@@ -69,6 +114,10 @@ export class VehiclesService {
         });
 
       const ids = vehicles.map((v) => v.id);
+      // Sequential, not Promise.all -- see the same note in
+      // PartsService.list()/detail(): these share the one transactional
+      // client withTenantContext hands out, and a single Postgres
+      // connection can't run concurrent/interleaved queries.
       const counts = ids.length
         ? await manager
             .getRepository(Part)
@@ -82,17 +131,68 @@ export class VehiclesService {
       const countsByVehicle = new Map(
         counts.map((c) => [c.vehicleId, Number(c.count)]),
       );
+      const latestGradeByVehicle = ids.length
+        ? await this.latestGradesFor(manager, ids)
+        : new Map<string, VehicleGradeSummary>();
+      const firstPhotoByVehicle = ids.length
+        ? await this.firstPhotoIdsFor(manager, ids)
+        : new Map<string, string>();
 
       return {
         items: vehicles.map((v) => ({
           ...v,
           partsCount: countsByVehicle.get(v.id) ?? 0,
+          latestGrade: latestGradeByVehicle.get(v.id) ?? null,
+          firstPhotoId: firstPhotoByVehicle.get(v.id) ?? null,
         })),
         total,
         page,
         pageSize,
       };
     });
+  }
+
+  /** Same DISTINCT ON shape as latestGradesFor(), but picks each vehicle's earliest still-unassigned VehiclePhoto id for a list-card thumbnail. */
+  private async firstPhotoIdsFor(
+    manager: EntityManager,
+    vehicleIds: string[],
+  ): Promise<Map<string, string>> {
+    const rows = await manager
+      .getRepository(VehiclePhoto)
+      .createQueryBuilder('p')
+      .distinctOn(['p.vehicleId'])
+      .where('p.vehicleId IN (:...vehicleIds)', { vehicleIds })
+      .orderBy('p.vehicleId')
+      .addOrderBy('p.createdAt', 'ASC')
+      .getMany();
+    return new Map(rows.map((r): [string, string] => [r.vehicleId, r.id]));
+  }
+
+  /**
+   * "Latest analysis wins" per vehicle -- VehicleAnalysis deliberately has
+   * no uniqueness constraint (a new row is written every time the photo set
+   * changes), so this picks the most recent row per vehicleId. DISTINCT ON
+   * needs an explicit ORDER BY starting with the same column it
+   * distinguishes on (vehicle_id) before the tiebreaker (created_at DESC).
+   */
+  private async latestGradesFor(
+    manager: EntityManager,
+    vehicleIds: string[],
+  ): Promise<Map<string, VehicleGradeSummary>> {
+    const rows = await manager
+      .getRepository(VehicleAnalysis)
+      .createQueryBuilder('a')
+      .distinctOn(['a.vehicleId'])
+      .where('a.vehicleId IN (:...vehicleIds)', { vehicleIds })
+      .orderBy('a.vehicleId')
+      .addOrderBy('a.createdAt', 'DESC')
+      .getMany();
+    return new Map(
+      rows.map((r): [string, VehicleGradeSummary] => [
+        r.vehicleId,
+        { grade: r.grade, status: r.status, photoCount: r.photoCount },
+      ]),
+    );
   }
 
   /**
@@ -150,12 +250,20 @@ export class VehiclesService {
       const photoCountsByVehicle = new Map(
         photoCounts.map((c) => [c.vehicleId, Number(c.count)]),
       );
+      const latestGradeByVehicle = ids.length
+        ? await this.latestGradesFor(manager, ids)
+        : new Map<string, VehicleGradeSummary>();
+      const firstPhotoByVehicle = ids.length
+        ? await this.firstPhotoIdsFor(manager, ids)
+        : new Map<string, string>();
 
       return {
         items: vehicles.map((v) => ({
           ...v,
           partsCount: partCountsByVehicle.get(v.id) ?? 0,
           unassignedPhotosCount: photoCountsByVehicle.get(v.id) ?? 0,
+          latestGrade: latestGradeByVehicle.get(v.id) ?? null,
+          firstPhotoId: firstPhotoByVehicle.get(v.id) ?? null,
         })),
         total,
         page,
@@ -167,7 +275,9 @@ export class VehiclesService {
   async detail(
     tenantId: string,
     vehicleId: string,
-  ): Promise<Vehicle & { parts: Part[] }> {
+  ): Promise<
+    Vehicle & { parts: Part[]; latestVehicleAnalysis: VehicleAnalysis | null }
+  > {
     return withTenantContext(this.dataSource, tenantId, async (manager) => {
       const vehicle = await manager
         .getRepository(Vehicle)
@@ -175,10 +285,14 @@ export class VehiclesService {
       if (!vehicle) {
         throw new NotFoundException('Vehicle not found');
       }
+      // Sequential -- see the Promise.all note on list()/mine() above.
       const parts = await manager
         .getRepository(Part)
         .find({ where: { vehicleId } });
-      return { ...vehicle, parts };
+      const latestVehicleAnalysis = await manager
+        .getRepository(VehicleAnalysis)
+        .findOne({ where: { vehicleId }, order: { createdAt: 'DESC' } });
+      return { ...vehicle, parts, latestVehicleAnalysis };
     });
   }
 
@@ -200,32 +314,115 @@ export class VehiclesService {
   ): Promise<IntakeResult> {
     const decoded = parseDecoded(dto.decoded);
 
-    return withTenantContext(this.dataSource, tenantId, async (manager) => {
-      const existing = await manager
-        .getRepository(Vehicle)
-        .findOne({ where: { tenantId, intakeDraftId: dto.draftId } });
-      if (existing) {
-        return { vehicleId: existing.id, duplicate: true };
-      }
+    const result = await withTenantContext(
+      this.dataSource,
+      tenantId,
+      async (manager) => {
+        const existing = await manager
+          .getRepository(Vehicle)
+          .findOne({ where: { tenantId, intakeDraftId: dto.draftId } });
+        if (existing) {
+          return { vehicleId: existing.id, duplicate: true, photosSaved: 0 };
+        }
 
-      const vehicle = await manager.getRepository(Vehicle).save(
-        manager.getRepository(Vehicle).create({
+        const vehicle = await manager.getRepository(Vehicle).save(
+          manager.getRepository(Vehicle).create({
+            tenantId,
+            vin: dto.vin,
+            make: decoded?.make ?? null,
+            model: decoded?.model ?? null,
+            year: decoded?.year ?? null,
+            trim: decoded?.trim ?? null,
+            decodedRaw: decoded?.raw ?? null,
+            intakeDraftId: dto.draftId,
+            createdByUserId: userId,
+          }),
+        );
+
+        const saved = await this.savePhotos(
+          manager,
           tenantId,
-          vin: dto.vin,
-          make: decoded?.make ?? null,
-          model: decoded?.model ?? null,
-          year: decoded?.year ?? null,
-          trim: decoded?.trim ?? null,
-          decodedRaw: decoded?.raw ?? null,
-          intakeDraftId: dto.draftId,
-          createdByUserId: userId,
-        }),
-      );
+          vehicle.id,
+          files,
+          dto.section,
+        );
 
-      await this.savePhotos(manager, tenantId, vehicle.id, files);
+        return {
+          vehicleId: vehicle.id,
+          duplicate: false,
+          photosSaved: saved.length,
+        };
+      },
+    );
 
-      return { vehicleId: vehicle.id, duplicate: false };
-    });
+    // After commit -- see savePhotos()'s comment for why enqueueing must
+    // not happen inside the still-open transaction.
+    if (result.photosSaved > 0) {
+      await this.enqueueVehicleAnalysis(tenantId, result.vehicleId);
+    }
+
+    return { vehicleId: result.vehicleId, duplicate: result.duplicate };
+  }
+
+  private static readonly VEHICLE_ANALYSIS_DEBOUNCE_MS = 5000;
+
+  /**
+   * Non-blocking, same rationale as PartsService.addImageInTransaction: the
+   * upload request returns as soon as photos are stored, grading happens
+   * asynchronously. Called after intake()/addPhotos() commit their
+   * transaction, so the worker is guaranteed to see every photo it queries
+   * for.
+   *
+   * Debounced per vehicle: the mobile "add more photos" screen
+   * (my-vehicle-detail-page-client.tsx) uploads each selected photo as its
+   * own immediate request, not one batch -- confirmed live, picking 10
+   * photos fired 10 separate grading jobs, each redundantly re-grading
+   * whatever photos already existed by the time it ran. A fixed jobId per
+   * vehicle plus `changeDelay()` on an already-pending job means a burst of
+   * uploads collapses into exactly one job, fired once 5s after the *last*
+   * upload in the burst -- not one per photo. removeOnComplete/removeOnFail
+   * let the same jobId be reused for a later, separate upload burst once
+   * this one has actually finished.
+   */
+  private async enqueueVehicleAnalysis(
+    tenantId: string,
+    vehicleId: string,
+  ): Promise<void> {
+    // BullMQ rejects ':' in a custom jobId (reserved as an internal Redis
+    // key delimiter) -- confirmed live via a real "Custom Id cannot
+    // contain :" error, not a guess.
+    const jobId = `vehicle-analysis-${vehicleId}`;
+    const existing = await this.vehicleAnalysisQueue.getJob(jobId);
+    if (existing) {
+      const state = await existing.getState();
+      if (state === 'delayed' || state === 'waiting') {
+        await existing.changeDelay(
+          VehiclesService.VEHICLE_ANALYSIS_DEBOUNCE_MS,
+        );
+        return;
+      }
+    }
+
+    await this.vehicleAnalysisQueue.add(
+      'analyze-vehicle',
+      { tenantId, vehicleId },
+      {
+        jobId,
+        delay: VehiclesService.VEHICLE_ANALYSIS_DEBOUNCE_MS,
+        // 5 attempts / exponential from 3s (3s,6s,12s,24s,48s -- ~93s worst
+        // case) instead of the original 3/2s: confirmed live via Gemini's
+        // own error message ("This model is currently experiencing high
+        // demand... usually temporary") that a real demand spike can
+        // outlast a ~6s total retry budget. This call already sends every
+        // photo on the vehicle in one request, so it's worth a longer
+        // budget rather than surfacing "grading failed" for something that
+        // clears up on its own shortly after.
+        attempts: 5,
+        backoff: { type: 'exponential', delay: 3000 },
+        removeOnComplete: true,
+        removeOnFail: true,
+      },
+    );
   }
 
   /**
@@ -239,16 +436,28 @@ export class VehiclesService {
     tenantId: string,
     vehicleId: string,
     files: Express.Multer.File[],
+    section?: VehiclePhotoSection,
   ): Promise<VehiclePhoto[]> {
-    return withTenantContext(this.dataSource, tenantId, async (manager) => {
-      const vehicle = await manager
-        .getRepository(Vehicle)
-        .findOne({ where: { id: vehicleId } });
-      if (!vehicle) {
-        throw new NotFoundException('Vehicle not found');
-      }
-      return this.savePhotos(manager, tenantId, vehicleId, files);
-    });
+    const saved = await withTenantContext(
+      this.dataSource,
+      tenantId,
+      async (manager) => {
+        const vehicle = await manager
+          .getRepository(Vehicle)
+          .findOne({ where: { id: vehicleId } });
+        if (!vehicle) {
+          throw new NotFoundException('Vehicle not found');
+        }
+        return this.savePhotos(manager, tenantId, vehicleId, files, section);
+      },
+    );
+
+    // After commit -- see savePhotos()'s comment.
+    if (saved.length > 0) {
+      await this.enqueueVehicleAnalysis(tenantId, vehicleId);
+    }
+
+    return saved;
   }
 
   private async savePhotos(
@@ -256,6 +465,7 @@ export class VehiclesService {
     tenantId: string,
     vehicleId: string,
     files: Express.Multer.File[],
+    section?: VehiclePhotoSection,
   ): Promise<VehiclePhoto[]> {
     const saved: VehiclePhoto[] = [];
     for (const file of files) {
@@ -271,17 +481,27 @@ export class VehiclesService {
           tenantId,
           vehicleId,
           url: relativePath,
+          section: section ?? null,
         }),
       );
       saved.push(photo);
     }
+    // Deliberately does NOT enqueue the vehicle-analysis job here -- this
+    // runs inside the caller's still-open transaction (withTenantContext in
+    // intake()/addPhotos()), and BullMQ's Redis-backed queue is entirely
+    // independent of that Postgres transaction. Enqueuing here let the
+    // worker start analyzeVehicle() -- its own separate transaction -- and
+    // query VehiclePhoto before this one committed, so it could see zero or
+    // stale photos (confirmed live: an e2e test uploading a 2nd photo
+    // flaked because the job ran before the photo was actually visible).
+    // See intake()/addPhotos() for the real enqueue, done after commit.
     return saved;
   }
 
   async listPhotos(
     tenantId: string,
     vehicleId: string,
-  ): Promise<VehiclePhoto[]> {
+  ): Promise<VehiclePhotoListItem[]> {
     return withTenantContext(this.dataSource, tenantId, async (manager) => {
       const vehicle = await manager
         .getRepository(Vehicle)
@@ -289,9 +509,43 @@ export class VehiclesService {
       if (!vehicle) {
         throw new NotFoundException('Vehicle not found');
       }
-      return manager
+      const photos = await manager
         .getRepository(VehiclePhoto)
         .find({ where: { vehicleId }, order: { createdAt: 'ASC' } });
+
+      const photoIds = photos.map((p) => p.id);
+      const suggestions = photoIds.length
+        ? await manager
+            .getRepository(VehiclePhotoSuggestion)
+            .find({ where: { vehiclePhotoId: In(photoIds) } })
+        : [];
+      const taxonomyIds = [...new Set(suggestions.map((s) => s.taxonomyId))];
+      const taxonomies = taxonomyIds.length
+        ? await manager
+            .getRepository(PartTaxonomy)
+            .findBy({ id: In(taxonomyIds) })
+        : [];
+      const taxonomyNameById = new Map(
+        taxonomies.map((t): [string, string] => [t.id, t.name]),
+      );
+      const suggestionsByPhotoId = new Map<
+        string,
+        VehiclePhotoSuggestionItem[]
+      >();
+      for (const s of suggestions) {
+        const list = suggestionsByPhotoId.get(s.vehiclePhotoId) ?? [];
+        list.push({
+          taxonomyId: s.taxonomyId,
+          taxonomyName: taxonomyNameById.get(s.taxonomyId) ?? null,
+          confidence: s.confidence,
+        });
+        suggestionsByPhotoId.set(s.vehiclePhotoId, list);
+      }
+
+      return photos.map((photo) => ({
+        ...photo,
+        suggestions: suggestionsByPhotoId.get(photo.id) ?? [],
+      }));
     });
   }
 
@@ -314,12 +568,20 @@ export class VehiclesService {
   }
 
   /**
-   * The manager-side counterpart to `intake()`: takes a set of raw,
-   * unassigned VehiclePhotos and a chosen taxonomy, creates the Part they
-   * actually belong to, and turns each photo into a real PartImage
-   * (reusing PartsService.addImageInTransaction()'s existing
-   * storage+insert+AI-enqueue logic) -- this is the point where a photo
-   * finally becomes gradable inventory.
+   * The manager-side counterpart to `intake()`: takes a set of raw
+   * VehiclePhotos and a chosen taxonomy, creates the Part they belong to,
+   * and turns each photo into a real PartImage (reusing
+   * PartsService.addImageInTransaction()'s existing storage+insert+AI-
+   * enqueue logic, which saves its own independent copy of the bytes) --
+   * this is the point where a photo finally becomes gradable inventory.
+   *
+   * Deliberately does NOT delete the original VehiclePhoto/file afterward
+   * (an earlier version did). A single wide photo often shows more than one
+   * part at once (bumper + headlight + hood in the same frame) -- deleting
+   * it after the first assignment made it impossible to also assign it to
+   * a second part, confirmed directly by the user hitting exactly this.
+   * The same photo can now be assigned to as many parts as it actually
+   * shows.
    */
   async assignPhotos(
     tenantId: string,
@@ -362,10 +624,36 @@ export class VehiclesService {
           part.id,
           { buffer, mimetype: mimetypeFromExtension(extension) },
         );
-        await manager.getRepository(VehiclePhoto).delete({ id: photo.id });
-        await this.storage.delete(photo.url);
       }
 
+      return { partId: part.id };
+    });
+  }
+
+  /**
+   * Manually adds a part with no photo -- for something the yard knows it
+   * has but that isn't (and may never be) photographed, e.g. an alternator
+   * still inside an unphotographed engine bay. See
+   * PartsService.createManual() for what this actually creates.
+   */
+  async createManualPart(
+    tenantId: string,
+    vehicleId: string,
+    taxonomyId: string,
+  ): Promise<{ partId: string }> {
+    return withTenantContext(this.dataSource, tenantId, async (manager) => {
+      const vehicle = await manager
+        .getRepository(Vehicle)
+        .findOne({ where: { id: vehicleId } });
+      if (!vehicle) {
+        throw new NotFoundException('Vehicle not found');
+      }
+      const part = await this.partsService.createManualInTransaction(
+        manager,
+        tenantId,
+        vehicleId,
+        taxonomyId,
+      );
       return { partId: part.id };
     });
   }

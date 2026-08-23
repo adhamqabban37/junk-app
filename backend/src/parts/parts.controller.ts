@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  Body,
   Controller,
   Get,
   Header,
@@ -9,11 +10,14 @@ import {
   ParseUUIDPipe,
   Post,
   Query,
+  Res,
+  StreamableFile,
   UploadedFile,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import type { Response } from 'express';
 import { memoryStorage } from 'multer';
 import type { JwtPayload } from '../auth/auth.service';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -21,6 +25,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { UserRole } from '../database/entities';
 import { ListPartsDto } from './dto/list-parts.dto';
+import { MergePartsDto } from './dto/merge-parts.dto';
 import { PartsService } from './parts.service';
 
 @Controller('parts')
@@ -55,6 +60,7 @@ export class PartsController {
       query.status,
       query.page,
       query.pageSize,
+      query.vehicleId,
     );
   }
 
@@ -68,6 +74,24 @@ export class PartsController {
   @Get('export.csv')
   exportCsv(@CurrentUser() user: JwtPayload): Promise<string> {
     return this.partsService.exportCsv(user.tenantId);
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.MANAGER, UserRole.OWNER)
+  @Get(':id/images/:imageId/file')
+  async imageFile(
+    @CurrentUser() user: JwtPayload,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('imageId', ParseUUIDPipe) imageId: string,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<StreamableFile> {
+    const file = await this.partsService.getImageFile(
+      user.tenantId,
+      id,
+      imageId,
+    );
+    res.set({ 'Content-Type': file.contentType });
+    return new StreamableFile(file.buffer);
   }
 
   @UseGuards(RolesGuard)
@@ -90,5 +114,30 @@ export class PartsController {
   ) {
     await this.partsService.approve(user.tenantId, id);
     return { status: 'approved' };
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.MANAGER, UserRole.OWNER)
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/regrade')
+  async regrade(
+    @CurrentUser() user: JwtPayload,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    await this.partsService.regrade(user.tenantId, id);
+    return { status: 'regrading' };
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.MANAGER, UserRole.OWNER)
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/merge')
+  async merge(
+    @CurrentUser() user: JwtPayload,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: MergePartsDto,
+  ) {
+    await this.partsService.merge(user.tenantId, id, body.sourcePartIds);
+    return this.partsService.detail(user.tenantId, id);
   }
 }

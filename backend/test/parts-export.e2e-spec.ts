@@ -3,6 +3,7 @@ import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import request from 'supertest';
 import * as bcrypt from 'bcryptjs';
+import { randomUUID } from 'crypto';
 import { DataSource } from 'typeorm';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/configure-app';
@@ -46,7 +47,9 @@ describe('Parts CSV export (e2e)', () => {
     const taxonomyRepo = dataSource.getRepository(PartTaxonomy);
     taxonomy = await taxonomyRepo.save(
       taxonomyRepo.create({
-        name: 'Radiator, Aluminum',
+        // Keeps the comma deliberately -- this suite is also asserting
+        // that CSV export quotes a comma-containing title field correctly.
+        name: `Radiator, Aluminum ${randomUUID()}`,
         category: 'Cooling',
         isQuickPick: false,
       }),
@@ -167,7 +170,7 @@ describe('Parts CSV export (e2e)', () => {
     expect(row).toContain('EXPORTTESTVIN123');
     // The title contains a comma (from the taxonomy name) -- correct CSV
     // quotes the whole field, not just the comma-containing substring.
-    expect(row).toContain('"2015 Ford F-150 Radiator, Aluminum"');
+    expect(row).toContain(`"2015 Ford F-150 ${taxonomy.name}"`);
     expect(row).toContain('scratch;dent');
     expect(row).toContain(',B,');
   });

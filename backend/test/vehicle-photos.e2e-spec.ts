@@ -14,7 +14,7 @@ import {
   AiAnalysis,
   AiAnalysisStatus,
 } from '../src/database/entities/ai-analysis.entity';
-import { Part, PartStatus } from '../src/database/entities/part.entity';
+import { Part } from '../src/database/entities/part.entity';
 import { PartImage } from '../src/database/entities/part-image.entity';
 import { PartTaxonomy } from '../src/database/entities/part-taxonomy.entity';
 import { Tenant } from '../src/database/entities/tenant.entity';
@@ -43,7 +43,10 @@ describe('Vehicle photos: list / file / assign (e2e)', () => {
   let dataSource: DataSource;
   let storage: LocalFileStorage;
   let uploadDir: string;
-  let fakeGemini: { analyzePartImage: jest.Mock };
+  let fakeGemini: {
+    analyzePartImage: jest.Mock;
+    analyzeVehiclePhotos: jest.Mock;
+  };
 
   let tenant: Tenant;
   let otherTenant: Tenant;
@@ -65,6 +68,18 @@ describe('Vehicle photos: list / file / assign (e2e)', () => {
         grade: 'A',
         damage_codes: [],
         confidence: 0.9,
+      }),
+      // savePhotos() (backing both intake() and POST /vehicles/:id/photos)
+      // enqueues a vehicle-analysis job on every saved photo batch --
+      // mocked here too so that job completes cleanly instead of retrying
+      // 3x with backoff against a missing method, which would otherwise
+      // still be in flight at afterAll's app.close() and risk the
+      // documented BullMQ/Redis teardown race (see PROGRESS.md).
+      analyzeVehiclePhotos: jest.fn().mockResolvedValue({
+        grade: 'B',
+        damage_codes: [],
+        confidence: 0.8,
+        photo_suggestions: [],
       }),
     };
 
@@ -95,7 +110,7 @@ describe('Vehicle photos: list / file / assign (e2e)', () => {
     const taxonomyRepo = dataSource.getRepository(PartTaxonomy);
     taxonomy = await taxonomyRepo.save(
       taxonomyRepo.create({
-        name: 'Headlight',
+        name: `Headlight ${randomUUID()}`,
         category: 'Lighting',
         isQuickPick: false,
       }),
@@ -275,7 +290,7 @@ describe('Vehicle photos: list / file / assign (e2e)', () => {
       .expect(404);
   });
 
-  it('assigns raw photos to a taxonomy: creates one Part with a PartImage per photo, consumes the raw photos, and reaches AI grading', async () => {
+  it('assigns raw photos to a taxonomy: creates one Part with a PartImage per photo, keeps the raw photos available for reuse, and reaches AI grading', async () => {
     const photoA = await createPhoto(vehicle.id, 'photo-a');
     const photoB = await createPhoto(vehicle.id, 'photo-b');
     const token = await loginManager();
@@ -290,10 +305,14 @@ describe('Vehicle photos: list / file / assign (e2e)', () => {
     const part = await withTenantContext(dataSource, tenant.id, (m) =>
       m.getRepository(Part).findOneOrFail({ where: { id: partId } }),
     );
+    // Not asserting `status` here -- removing the old delete-on-assign
+    // calls made this transaction commit sooner, so the mocked-but-real
+    // AI job now sometimes finishes (flipping status to PENDING_REVIEW)
+    // before this line runs. The waitFor() below is the real correctness
+    // check for the AI pipeline; this just confirms the Part itself.
     expect(part).toMatchObject({
       vehicleId: vehicle.id,
       taxonomyId: taxonomy.id,
-      status: PartStatus.PENDING_AI,
     });
 
     const partImages = await withTenantContext(dataSource, tenant.id, (m) =>
@@ -301,6 +320,9 @@ describe('Vehicle photos: list / file / assign (e2e)', () => {
     );
     expect(partImages).toHaveLength(2);
 
+    // Deliberately NOT deleted: a single photo often shows more than one
+    // part (bumper + headlight in the same frame), so assigning it once
+    // must not make it unavailable for a second, different part.
     const remainingPhotos = await withTenantContext(
       dataSource,
       tenant.id,
@@ -309,7 +331,7 @@ describe('Vehicle photos: list / file / assign (e2e)', () => {
           .getRepository(VehiclePhoto)
           .find({ where: { vehicleId: vehicle.id } }),
     );
-    expect(remainingPhotos).toHaveLength(0);
+    expect(remainingPhotos).toHaveLength(2);
 
     // Longer budget than the single-photo waitFor() elsewhere in this
     // suite (e.g. parts.e2e-spec.ts's 8s default): assignPhotos() does
@@ -328,6 +350,51 @@ describe('Vehicle photos: list / file / assign (e2e)', () => {
     }, 20000);
     expect(fakeGemini.analyzePartImage).toHaveBeenCalled();
   }, 25000);
+
+  it('lets the same photo be assigned to a second, different part -- it often shows more than one', async () => {
+    const photo = await createPhoto(
+      vehicle.id,
+      'wide-shot-bumper-and-headlight',
+    );
+    const token = await loginManager();
+    const secondTaxonomy = await dataSource.getRepository(PartTaxonomy).save(
+      dataSource.getRepository(PartTaxonomy).create({
+        name: `Bumper ${randomUUID()}`,
+        category: 'Body',
+        isQuickPick: false,
+      }),
+    );
+
+    const first = await request(app.getHttpServer())
+      .post(`/vehicles/${vehicle.id}/photos/assign`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ photoIds: [photo.id], taxonomyId: taxonomy.id })
+      .expect(200);
+
+    const second = await request(app.getHttpServer())
+      .post(`/vehicles/${vehicle.id}/photos/assign`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ photoIds: [photo.id], taxonomyId: secondTaxonomy.id })
+      .expect(200);
+
+    const firstPartId = (first.body as { partId: string }).partId;
+    const secondPartId = (second.body as { partId: string }).partId;
+    expect(firstPartId).not.toBe(secondPartId);
+
+    const firstImages = await withTenantContext(dataSource, tenant.id, (m) =>
+      m.getRepository(PartImage).find({ where: { partId: firstPartId } }),
+    );
+    const secondImages = await withTenantContext(dataSource, tenant.id, (m) =>
+      m.getRepository(PartImage).find({ where: { partId: secondPartId } }),
+    );
+    expect(firstImages).toHaveLength(1);
+    expect(secondImages).toHaveLength(1);
+
+    // No cleanup of secondTaxonomy: the two Parts just created still
+    // reference it via a FK, so deleting it here would violate that
+    // constraint (PartTaxonomy is a global lookup table, not tenant-scoped
+    // -- leaving one extra test row behind is harmless).
+  });
 
   describe('POST /vehicles/:id/photos (add more, after initial intake)', () => {
     it('rejects unauthenticated requests', async () => {
@@ -374,6 +441,39 @@ describe('Vehicle photos: list / file / assign (e2e)', () => {
         .set('Authorization', `Bearer ${token}`)
         .expect(200);
       expect(listRes.body as unknown[]).toHaveLength(3);
+    });
+
+    it('applies an optional section tag to every photo in the batch, and leaves it null when omitted', async () => {
+      const token = await loginWorker();
+
+      const tagged = await request(app.getHttpServer())
+        .post(`/vehicles/${vehicle.id}/photos`)
+        .set('Authorization', `Bearer ${token}`)
+        .field('section', 'driver_side')
+        .attach('photo:side-1', Buffer.from('side-bytes-1'), 'side-1.jpg')
+        .attach('photo:side-2', Buffer.from('side-bytes-2'), 'side-2.jpg')
+        .expect(201);
+      const taggedBody = tagged.body as { section: string | null }[];
+      expect(taggedBody).toHaveLength(2);
+      expect(taggedBody.every((p) => p.section === 'driver_side')).toBe(true);
+
+      const untagged = await request(app.getHttpServer())
+        .post(`/vehicles/${vehicle.id}/photos`)
+        .set('Authorization', `Bearer ${token}`)
+        .attach('photo:plain-1', Buffer.from('plain-bytes'), 'plain-1.jpg')
+        .expect(201);
+      const untaggedBody = untagged.body as { section: string | null }[];
+      expect(untaggedBody[0].section).toBeNull();
+    });
+
+    it('rejects an unrecognized section value', async () => {
+      const token = await loginWorker();
+      await request(app.getHttpServer())
+        .post(`/vehicles/${vehicle.id}/photos`)
+        .set('Authorization', `Bearer ${token}`)
+        .field('section', 'not-a-real-section')
+        .attach('photo:p1', Buffer.from('bytes'), 'p1.jpg')
+        .expect(400);
     });
   });
 });
