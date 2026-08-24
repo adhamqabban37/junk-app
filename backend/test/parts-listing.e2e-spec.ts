@@ -33,6 +33,8 @@ describe('Parts listing/detail/approve (e2e)', () => {
   let approvedPart: Part;
   let multiPhotoPart: Part;
   let multiPhotoWorstAnalysis: AiAnalysis;
+  let xAndRealGradePart: Part;
+  let allXPart: Part;
   const MANAGER_PASSWORD = 'parts-listing-password';
   const WORKER_PIN = '3571';
 
@@ -207,6 +209,104 @@ describe('Parts listing/detail/approve (e2e)', () => {
           }),
         ),
     );
+
+    // X ("insufficient information") from one blurry angle must never mask
+    // a real grade found from a different, clearer angle of the same Part.
+    xAndRealGradePart = await withTenantContext(dataSource, tenant.id, (m) =>
+      m.getRepository(Part).save(
+        m.getRepository(Part).create({
+          tenantId: tenant.id,
+          vehicleId: vehicle.id,
+          taxonomyId: taxonomy.id,
+          status: PartStatus.PENDING_REVIEW,
+        }),
+      ),
+    );
+    const blurryImage = await withTenantContext(dataSource, tenant.id, (m) =>
+      m.getRepository(PartImage).save(
+        m.getRepository(PartImage).create({
+          tenantId: tenant.id,
+          partId: xAndRealGradePart.id,
+          url: 'blurry-angle.jpg',
+          qualityFlags: null,
+        }),
+      ),
+    );
+    const clearImage = await withTenantContext(dataSource, tenant.id, (m) =>
+      m.getRepository(PartImage).save(
+        m.getRepository(PartImage).create({
+          tenantId: tenant.id,
+          partId: xAndRealGradePart.id,
+          url: 'clear-angle.jpg',
+          qualityFlags: null,
+        }),
+      ),
+    );
+    await withTenantContext(dataSource, tenant.id, (m) =>
+      m.getRepository(AiAnalysis).save(
+        m.getRepository(AiAnalysis).create({
+          tenantId: tenant.id,
+          partId: xAndRealGradePart.id,
+          partImageId: blurryImage.id,
+          modelVersion: 'gemini-2.0-flash',
+          grade: AiGrade.X,
+          damageCodes: [],
+          confidence: 0.3,
+          status: AiAnalysisStatus.COMPLETE,
+        }),
+      ),
+    );
+    await withTenantContext(dataSource, tenant.id, (m) =>
+      m.getRepository(AiAnalysis).save(
+        m.getRepository(AiAnalysis).create({
+          tenantId: tenant.id,
+          partId: xAndRealGradePart.id,
+          partImageId: clearImage.id,
+          modelVersion: 'gemini-2.0-flash',
+          grade: AiGrade.B,
+          damageCodes: ['dent'],
+          confidence: 0.8,
+          status: AiAnalysisStatus.COMPLETE,
+        }),
+      ),
+    );
+
+    // Every image is X -- there's no real grade to surface, so the Part
+    // itself should report X too.
+    allXPart = await withTenantContext(dataSource, tenant.id, (m) =>
+      m.getRepository(Part).save(
+        m.getRepository(Part).create({
+          tenantId: tenant.id,
+          vehicleId: vehicle.id,
+          taxonomyId: taxonomy.id,
+          status: PartStatus.PENDING_REVIEW,
+        }),
+      ),
+    );
+    const allXImage = await withTenantContext(dataSource, tenant.id, (m) =>
+      m.getRepository(PartImage).save(
+        m.getRepository(PartImage).create({
+          tenantId: tenant.id,
+          partId: allXPart.id,
+          url: 'unassessable-angle.jpg',
+          qualityFlags: null,
+        }),
+      ),
+    );
+    await withTenantContext(dataSource, tenant.id, (m) =>
+      m.getRepository(AiAnalysis).save(
+        m.getRepository(AiAnalysis).create({
+          tenantId: tenant.id,
+          partId: allXPart.id,
+          partImageId: allXImage.id,
+          modelVersion: 'gemini-2.0-flash',
+          grade: AiGrade.X,
+          damageCodes: [],
+          confidence: 0.2,
+          status: AiAnalysisStatus.COMPLETE,
+        }),
+      ),
+    );
   });
 
   afterAll(async () => {
@@ -260,7 +360,8 @@ describe('Parts listing/detail/approve (e2e)', () => {
       }>;
       total: number;
     };
-    expect(body.total).toBe(3);
+    // reviewPart, approvedPart, multiPhotoPart, xAndRealGradePart, allXPart.
+    expect(body.total).toBe(5);
     const found = body.items.find((p) => p.id === reviewPart.id);
     expect(found?.taxonomyName).toBe(taxonomy.name);
     expect(found?.vehicle.vin).toBe('PARTSLISTVIN1234');
@@ -315,6 +416,32 @@ describe('Parts listing/detail/approve (e2e)', () => {
       'rust',
       'scratch',
     ]);
+  });
+
+  it('an X ("insufficient information") reading from one angle never masks a real grade found from another angle of the same Part', async () => {
+    const token = await loginManager();
+    const res = await request(app.getHttpServer())
+      .get('/parts')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    const body = res.body as {
+      items: Array<{ id: string; latestAnalysis: { grade: string } | null }>;
+    };
+    const found = body.items.find((p) => p.id === xAndRealGradePart.id);
+    expect(found?.latestAnalysis?.grade).toBe('B');
+  });
+
+  it('reports X when every photo of a Part came back as X', async () => {
+    const token = await loginManager();
+    const res = await request(app.getHttpServer())
+      .get('/parts')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    const body = res.body as {
+      items: Array<{ id: string; latestAnalysis: { grade: string } | null }>;
+    };
+    const found = body.items.find((p) => p.id === allXPart.id);
+    expect(found?.latestAnalysis?.grade).toBe('X');
   });
 
   it('filters by status', async () => {

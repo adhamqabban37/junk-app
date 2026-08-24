@@ -21,6 +21,7 @@ import { PartTaxonomy } from '../database/entities/part-taxonomy.entity';
 import { PricingHistory } from '../database/entities/pricing-history.entity';
 import { Vehicle } from '../database/entities/vehicle.entity';
 import { withTenantContext } from '../database/tenant-context';
+import type { AraDamageInstance } from '../ai/grading.service';
 import { toCsv } from './csv';
 import {
   LocalFileStorage,
@@ -28,11 +29,19 @@ import {
   resolveImageExtension,
 } from '../storage/local-file-storage';
 
-/** Exported for reuse by AiAnalysisService.analyzeVehicle(), which combines multiple per-section Gemini calls into one overall vehicle grade the same "worst wins" way. */
+/**
+ * Exported for reuse by AiAnalysisService.analyzeVehicle(), which combines
+ * multiple per-section Gemini calls into one overall vehicle grade the
+ * same "worst wins" way. X is included only for type completeness --
+ * aggregatePartAnalysis() below (and analyzeVehicle(), which never
+ * produces X in the first place) both exclude X from real severity
+ * comparisons, so this value is never actually read.
+ */
 export const GRADE_SEVERITY: Record<AiGrade, number> = {
   [AiGrade.A]: 0,
   [AiGrade.B]: 1,
   [AiGrade.C]: 2,
+  [AiGrade.X]: -1,
 };
 
 /**
@@ -52,15 +61,20 @@ export const GRADE_SEVERITY: Record<AiGrade, number> = {
  */
 function aggregatePartAnalysis(analyses: AiAnalysis[]): AiAnalysis | null {
   if (analyses.length === 0) return null;
+  // X ("insufficient information") is excluded from the worst-wins pool --
+  // it's not a severity tier, so an X reading from one blurry angle must
+  // never mask a real A/B/C grade found from a different, clearer angle of
+  // the same Part. Only surfaces when every graded row is X.
   const graded = analyses.filter(
-    (a): a is AiAnalysis & { grade: AiGrade } => a.grade !== null,
+    (a): a is AiAnalysis & { grade: AiGrade } =>
+      a.grade !== null && a.grade !== AiGrade.X,
   );
   const controlling =
     graded.length > 0
       ? graded.reduce((worst, a) =>
           GRADE_SEVERITY[a.grade] > GRADE_SEVERITY[worst.grade] ? a : worst,
         )
-      : analyses[0];
+      : (analyses.find((a) => a.grade === AiGrade.X) ?? analyses[0]);
   const damageCodes = [...new Set(analyses.flatMap((a) => a.damageCodes))];
   return { ...controlling, damageCodes };
 }
@@ -88,12 +102,18 @@ export interface PartListItem {
   photosCount: number;
   /** Earliest PartImage id, for a Review Queue thumbnail -- "the photo AI graded this from," per the user's own ask ("have the image of where AI chose that [part] or not"). */
   firstImageId: string | null;
+  /** Most recent PricingHistory row's price, if a manager has ever set one -- pricing_history is an append-only log, this is just its latest entry per part. */
+  latestPrice: string | null;
   latestAnalysis: {
     id: string;
     grade: string | null;
     damageCodes: string[];
     confidence: number | string | null;
     status: string;
+    /** ARA damage-unit total, sheet-metal parts only -- null for every other part type. See grading.service.ts. */
+    damageUnits: number | string | null;
+    /** Itemized ARA damage backing damageUnits/grade, sheet-metal parts only -- null otherwise. */
+    araDamageCodes: AraDamageInstance[] | null;
   } | null;
 }
 
@@ -150,6 +170,37 @@ export class PartsService {
           { attempts: 3, backoff: { type: 'exponential', delay: 2000 } },
         );
       }
+    });
+  }
+
+  /**
+   * Records a manually-set asking price for a part -- pricing_history is an
+   * append-only log (real deployments will also see rows land here from a
+   * future MarketCheck/comp-pricing integration, per docs/PROGRESS.md's own
+   * scoping note), so this never updates a row in place, it just adds the
+   * newest one. `list()`'s `latestPrice` is always this row's price, per
+   * part, ordered by createdAt.
+   */
+  async setPrice(
+    tenantId: string,
+    partId: string,
+    price: number,
+  ): Promise<void> {
+    await withTenantContext(this.dataSource, tenantId, async (manager) => {
+      const part = await manager
+        .getRepository(Part)
+        .findOne({ where: { id: partId } });
+      if (!part) {
+        throw new NotFoundException('Part not found');
+      }
+      await manager.getRepository(PricingHistory).save(
+        manager.getRepository(PricingHistory).create({
+          tenantId,
+          partId,
+          source: 'manual',
+          price: price.toFixed(2),
+        }),
+      );
     });
   }
 
@@ -435,6 +486,16 @@ export class PartsService {
             .addOrderBy('img.createdAt', 'ASC')
             .getMany()
         : [];
+      const latestPrices = partIds.length
+        ? await manager
+            .getRepository(PricingHistory)
+            .createQueryBuilder('ph')
+            .distinctOn(['ph.partId'])
+            .where('ph.partId IN (:...partIds)', { partIds })
+            .orderBy('ph.partId')
+            .addOrderBy('ph.createdAt', 'DESC')
+            .getMany()
+        : [];
 
       const vehicleById = new Map(
         vehicles.map((v): [string, Vehicle] => [v.id, v]),
@@ -459,6 +520,9 @@ export class PartsService {
       const firstImageByPart = new Map(
         firstImages.map((img): [string, string] => [img.partId, img.id]),
       );
+      const latestPriceByPart = new Map(
+        latestPrices.map((p): [string, string] => [p.partId, p.price]),
+      );
 
       return {
         items: parts.map((part) =>
@@ -469,6 +533,7 @@ export class PartsService {
             latestAnalysisByPart,
             photoCountByPart,
             firstImageByPart,
+            latestPriceByPart,
           ),
         ),
         total,
@@ -485,6 +550,7 @@ export class PartsService {
     latestAnalysisByPart: Map<string, AiAnalysis>,
     photoCountByPart: Map<string, number>,
     firstImageByPart: Map<string, string>,
+    latestPriceByPart: Map<string, string>,
   ): PartListItem {
     const vehicle = vehicleById.get(part.vehicleId);
     const taxonomy = taxonomyById.get(part.taxonomyId);
@@ -506,6 +572,7 @@ export class PartsService {
         : null,
       photosCount: photoCountByPart.get(part.id) ?? 0,
       firstImageId: firstImageByPart.get(part.id) ?? null,
+      latestPrice: latestPriceByPart.get(part.id) ?? null,
       latestAnalysis: analysis
         ? {
             id: analysis.id,
@@ -513,6 +580,8 @@ export class PartsService {
             damageCodes: analysis.damageCodes,
             confidence: analysis.confidence,
             status: analysis.status,
+            damageUnits: analysis.damageUnits,
+            araDamageCodes: analysis.araDamageCodes,
           }
         : null,
     };
@@ -596,6 +665,16 @@ export class PartsService {
             order: { createdAt: 'DESC' },
           })
         : [];
+      const latestPrices = partIds.length
+        ? await manager
+            .getRepository(PricingHistory)
+            .createQueryBuilder('ph')
+            .distinctOn(['ph.partId'])
+            .where('ph.partId IN (:...partIds)', { partIds })
+            .orderBy('ph.partId')
+            .addOrderBy('ph.createdAt', 'DESC')
+            .getMany()
+        : [];
 
       const vehicleById = new Map(
         vehicles.map((v): [string, Vehicle] => [v.id, v]),
@@ -609,6 +688,9 @@ export class PartsService {
           latestAnalysisByPart.set(analysis.partId, analysis);
         }
       }
+      const latestPriceByPart = new Map(
+        latestPrices.map((p): [string, string] => [p.partId, p.price]),
+      );
 
       const header = [
         'id',
@@ -616,6 +698,7 @@ export class PartsService {
         'title',
         'description',
         'grade',
+        'damage_units',
         'damage_codes',
         'confidence',
         'status',
@@ -642,10 +725,11 @@ export class PartsService {
           title,
           description,
           analysis?.grade ?? '',
+          analysis?.damageUnits != null ? String(analysis.damageUnits) : '',
           analysis?.damageCodes.join(';') ?? '',
           analysis?.confidence != null ? String(analysis.confidence) : '',
           part.status,
-          '', // price placeholder -- real pricing logic is out of MVP scope
+          latestPriceByPart.get(part.id) ?? '',
         ];
       });
 

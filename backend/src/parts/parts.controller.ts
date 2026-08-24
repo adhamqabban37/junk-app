@@ -26,6 +26,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { UserRole } from '../database/entities';
 import { ListPartsDto } from './dto/list-parts.dto';
 import { MergePartsDto } from './dto/merge-parts.dto';
+import { SetPartPriceDto } from './dto/set-part-price.dto';
 import { PartsService } from './parts.service';
 
 @Controller('parts')
@@ -139,5 +140,18 @@ export class PartsController {
   ) {
     await this.partsService.merge(user.tenantId, id, body.sourcePartIds);
     return this.partsService.detail(user.tenantId, id);
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.MANAGER, UserRole.OWNER)
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/price')
+  async setPrice(
+    @CurrentUser() user: JwtPayload,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: SetPartPriceDto,
+  ) {
+    await this.partsService.setPrice(user.tenantId, id, body.price);
+    return { status: 'priced', price: body.price };
   }
 }

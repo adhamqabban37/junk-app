@@ -4,6 +4,7 @@ import { AiAnalysisProcessor } from './ai-analysis.processor';
 import { AiAnalysisService } from './ai-analysis.service';
 import { VehicleAnalysisProcessor } from './vehicle-analysis.processor';
 import { GeminiService } from './gemini.service';
+import { GradingService } from './grading.service';
 import { CorrectionsController } from './corrections.controller';
 import { CorrectionsService } from './corrections.service';
 
@@ -20,6 +21,7 @@ import { CorrectionsService } from './corrections.service';
   controllers: [CorrectionsController],
   providers: [
     GeminiService,
+    GradingService,
     AiAnalysisService,
     AiAnalysisProcessor,
     VehicleAnalysisProcessor,

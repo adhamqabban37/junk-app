@@ -15,14 +15,9 @@ import {
 import { listParts, approvePart, type PartListItem } from "@/lib/api/parts";
 import { VehiclePhotoThumb } from "@/components/desktop/vehicle-photo-thumb";
 import { GradeBadge } from "@/components/desktop/grade-badge";
+import { PartGradeBadge } from "@/components/desktop/part-grade-badge";
 
-const PART_GRADE_STYLES: Record<string, string> = {
-  A: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
-  B: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
-  C: "bg-red-500/15 text-red-600 dark:text-red-400",
-};
-
-/** Per-part AI grade card: shows the taxonomy name, grade/damage/confidence once analysis completes, and an Approve action -- this is the "what did AI rate each part, so I can approve or not" view that was missing (the old Parts section only showed a bare status word). */
+/** Per-part AI grade card: shows the taxonomy name, grade/damage/confidence once analysis completes, and an Approve action -- this is the "what did AI rate each part, so I can approve or not" view that was missing (the old Parts section only showed a bare status word). Re-grade lives on the Inventory tab instead, not here -- deliberate, per the user's own call. */
 function PartCard({ part, onApprove, approving }: { part: PartListItem; onApprove: () => void; approving: boolean }) {
   const analysis = part.latestAnalysis;
   const alreadyDecided = part.status === "approved" || part.status === "listed" || part.status === "sold";
@@ -45,9 +40,7 @@ function PartCard({ part, onApprove, approving }: { part: PartListItem; onApprov
       ) : (
         <>
           <div className="flex flex-wrap items-center gap-2">
-            <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${PART_GRADE_STYLES[analysis.grade ?? ""] ?? "bg-muted text-muted-foreground"}`}>
-              Grade {analysis.grade}
-            </span>
+            <PartGradeBadge grade={analysis.grade} damageUnits={analysis.damageUnits} />
             {analysis.confidence != null && (
               <span className="text-xs text-muted-foreground">{Math.round(Number(analysis.confidence) * 100)}% confidence</span>
             )}
@@ -61,7 +54,7 @@ function PartCard({ part, onApprove, approving }: { part: PartListItem; onApprov
               ))}
             </div>
           )}
-          {!alreadyDecided && (
+          {!alreadyDecided && analysis.grade !== "X" && (
             <Button type="button" size="sm" variant="outline" disabled={approving} onClick={onApprove}>
               {approving ? "Approving…" : "Approve"}
             </Button>

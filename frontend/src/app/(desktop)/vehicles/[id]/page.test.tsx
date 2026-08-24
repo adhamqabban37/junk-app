@@ -72,6 +72,7 @@ function makePart(overrides: Partial<PartListItem> = {}): PartListItem {
     vehicle: null,
     photosCount: 1,
     firstImageId: null,
+    latestPrice: null,
     latestAnalysis: null,
     ...overrides,
   };
@@ -299,6 +300,8 @@ describe("VehicleDetailPageClient", () => {
             damageCodes: ["scratch", "faded paint"],
             confidence: 0.88,
             status: "complete",
+            damageUnits: null,
+            araDamageCodes: null,
           },
         }),
       ],
@@ -323,7 +326,7 @@ describe("VehicleDetailPageClient", () => {
       items: [
         makePart({
           id: "part-1",
-          latestAnalysis: { id: "a1", grade: "A", damageCodes: [], confidence: 0.9, status: "complete" },
+          latestAnalysis: { id: "a1", grade: "A", damageCodes: [], confidence: 0.9, status: "complete", damageUnits: null, araDamageCodes: null },
         }),
       ],
       total: 1,
@@ -352,7 +355,7 @@ describe("VehicleDetailPageClient", () => {
           id: "part-failed",
           taxonomyName: "Fender",
           status: "needs_manual_grading",
-          latestAnalysis: { id: "a2", grade: null, damageCodes: [], confidence: null, status: "failed" },
+          latestAnalysis: { id: "a2", grade: null, damageCodes: [], confidence: null, status: "failed", damageUnits: null, araDamageCodes: null },
         }),
       ],
       total: 2,
@@ -364,5 +367,34 @@ describe("VehicleDetailPageClient", () => {
 
     expect(await screen.findByText(/grading in progress/i)).toBeInTheDocument();
     expect(screen.getByText(/needs manual grading/i)).toBeInTheDocument();
+  });
+
+  it('shows "Ungraded" and hides Approve for a sheet-metal part the AI could not assess (ARA X grade)', async () => {
+    vi.mocked(getVehicle).mockResolvedValue(makeVehicle());
+    vi.mocked(listVehiclePhotos).mockResolvedValue([]);
+    vi.mocked(listParts).mockResolvedValue({
+      items: [
+        makePart({
+          id: "part-1",
+          latestAnalysis: {
+            id: "a1",
+            grade: "X",
+            damageCodes: [],
+            confidence: 0.3,
+            status: "complete",
+            damageUnits: null,
+            araDamageCodes: null,
+          },
+        }),
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 200,
+    });
+
+    render(<VehicleDetailPageClient vehicleId="v1" />);
+
+    expect(await screen.findByText("Ungraded")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^approve$/i })).not.toBeInTheDocument();
   });
 });

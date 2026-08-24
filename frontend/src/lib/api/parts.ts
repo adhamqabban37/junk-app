@@ -8,12 +8,25 @@ export type PartStatus =
   | "listed"
   | "sold";
 
+/** One itemized ARA-style damage finding on a sheet-metal part (see backend/src/ai/grading.service.ts) -- location + damage type + severity, plus the ARA unit value that severity/type resolved to at grading time. */
+export interface AraDamageInstance {
+  location: string;
+  damageType: string;
+  severity: "minor" | "moderate" | "major";
+  units: number;
+}
+
 export interface PartLatestAnalysis {
   id: string;
-  grade: "A" | "B" | "C" | null;
+  /** "X" = ARA-style "ungraded" -- insufficient photo info to assess a sheet-metal part, distinct from a real A/B/C grade. */
+  grade: "A" | "B" | "C" | "X" | null;
   damageCodes: string[];
   confidence: number | string | null;
   status: "pending" | "complete" | "failed";
+  /** ARA damage-unit total, sheet-metal parts only -- null for every other part type. */
+  damageUnits: number | string | null;
+  /** Itemized ARA damage backing damageUnits/grade, sheet-metal parts only -- null otherwise. */
+  araDamageCodes: AraDamageInstance[] | null;
 }
 
 export interface PartListItem {
@@ -26,6 +39,8 @@ export interface PartListItem {
   photosCount: number;
   /** Earliest PartImage id, for a Review Queue thumbnail -- "the photo AI chose that part from." Null for a manually-added part with no photo. */
   firstImageId: string | null;
+  /** Most recent manually-set asking price, if any -- pricing_history is an append-only log, this is just its latest row. */
+  latestPrice: string | null;
   latestAnalysis: PartLatestAnalysis | null;
 }
 
@@ -88,6 +103,25 @@ export function mergeParts(
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ sourcePartIds }),
+    },
+    fetchImpl,
+  );
+}
+
+/** Manager-set asking price, from the Inventory tab -- appends to pricing_history rather than editing a price in place. */
+export function setPartPrice(
+  token: string,
+  id: string,
+  price: number,
+  fetchImpl?: typeof fetch,
+): Promise<{ status: string; price: number }> {
+  return authFetch<{ status: string; price: number }>(
+    `/parts/${id}/price`,
+    {
+      token,
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ price }),
     },
     fetchImpl,
   );

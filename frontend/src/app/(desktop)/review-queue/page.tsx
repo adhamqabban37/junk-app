@@ -11,11 +11,15 @@ import { fetchTaxonomy, type TaxonomyItemResponse } from "@/lib/api";
 import { createManualPart, listVehicles, type VehicleListItem } from "@/lib/api/vehicles";
 import { PartImageThumb } from "@/components/desktop/part-image-thumb";
 
-const GRADES = ["A", "B", "C"] as const;
+const GRADES = ["A", "B", "C", "X"] as const;
 
 function needsReview(item: PartListItem, threshold: number): boolean {
   const analysis = item.latestAnalysis;
   if (!analysis || analysis.status !== "complete") return true;
+  // X ("insufficient information") always needs a human look -- that's the
+  // whole point of the state, regardless of the confidence Gemini reported
+  // alongside it.
+  if (analysis.grade === "X") return true;
   if (analysis.confidence === null) return true;
   return Number(analysis.confidence) < threshold;
 }
@@ -336,6 +340,8 @@ export default function ReviewQueuePage() {
                         : "No damage codes noted"}
                       {item.latestAnalysis?.confidence != null &&
                         ` · Confidence ${Math.round(Number(item.latestAnalysis.confidence) * 100)}%`}
+                      {item.latestAnalysis?.damageUnits != null &&
+                        ` · ${Number(item.latestAnalysis.damageUnits).toFixed(2)} damage units`}
                     </p>
                   </div>
                 </div>

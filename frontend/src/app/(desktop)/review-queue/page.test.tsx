@@ -42,12 +42,15 @@ function makePart(overrides: Partial<PartListItem> = {}): PartListItem {
     vehicle: { id: "v1", vin: "VIN1234567890123", make: "Honda", model: "Accord", year: 2005 },
     photosCount: 1,
     firstImageId: null,
+    latestPrice: null,
     latestAnalysis: {
       id: "part-1-analysis",
       grade: "B",
       damageCodes: ["scratch"],
       confidence: 0.9,
       status: "complete",
+      damageUnits: null,
+      araDamageCodes: null,
     },
     ...overrides,
   };
@@ -103,11 +106,11 @@ describe("ReviewQueuePage", () => {
   it("visually distinguishes a low-confidence item from a high-confidence one", async () => {
     const highConfidence = makePart({
       id: "high",
-      latestAnalysis: { id: "high-analysis", grade: "A", damageCodes: [], confidence: 0.95, status: "complete" },
+      latestAnalysis: { id: "high-analysis", grade: "A", damageCodes: [], confidence: 0.95, status: "complete", damageUnits: null, araDamageCodes: null },
     });
     const lowConfidence = makePart({
       id: "low",
-      latestAnalysis: { id: "low-analysis", grade: "C", damageCodes: ["rust"], confidence: 0.3, status: "complete" },
+      latestAnalysis: { id: "low-analysis", grade: "C", damageCodes: ["rust"], confidence: 0.3, status: "complete", damageUnits: null, araDamageCodes: null },
     });
     vi.mocked(listParts).mockResolvedValue(makeListResult([highConfidence, lowConfidence]));
 
@@ -124,7 +127,7 @@ describe("ReviewQueuePage", () => {
     const failed = makePart({
       id: "failed",
       status: "needs_manual_grading",
-      latestAnalysis: { id: "failed-analysis", grade: null, damageCodes: [], confidence: null, status: "failed" },
+      latestAnalysis: { id: "failed-analysis", grade: null, damageCodes: [], confidence: null, status: "failed", damageUnits: null, araDamageCodes: null },
     });
     vi.mocked(listParts).mockResolvedValue(makeListResult([failed]));
 

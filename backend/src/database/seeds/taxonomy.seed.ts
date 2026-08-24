@@ -124,6 +124,34 @@ function isExteriorVisual(name: string): boolean {
   return PHOTO_IDENTIFIABLE_PATTERN.test(name);
 }
 
+/**
+ * True cosmetic sheet-metal/body panels -- the set ARA-style damage-unit
+ * grading (see backend/src/ai/grading.service.ts) actually applies to.
+ * Deliberately narrower than `category === 'Body'` (`CATEGORY_RULES`
+ * above): that category also matches mouldings, grilles, emblems, and
+ * weather stripping, none of which get damage-unit-graded the way an
+ * actual fender/door/hood/quarter panel does. Built the same way as
+ * `PHOTO_IDENTIFIABLE_PATTERN` above (an include pattern plus an explicit
+ * exclude pattern for hardware/trim/glass words that would otherwise
+ * false-positive on a bare substring match like "door" or "panel") --
+ * verified against the real ~700-name list during development: 53 clean
+ * matches, no hinges/latches/locks/handles/glass/regulators/mouldings
+ * slipped in. Deliberately excludes frame/subframe/core-support/crossmember
+ * (structural, not cosmetic sheet metal -- a different kind of inspection)
+ * and ambiguous composite assemblies like "Nose (Front End Assembly)".
+ */
+const SHEET_METAL_INCLUDE_PATTERN =
+  /^fender$|^fender extension$|^fender skirt$|^back door$|door (front|back|shell)|^front door$|^rear door$|door outer repair panel|^hood$|deck lid assembly|deck lid\/trunk lid shell|hatch\/trunk lid|trunk lid\/hatch|liftgate (shell|assembly)|tailgate shell|tailgate\/trunk lid|quarter panel|quarter repair panel|rear body panel|^rear clip$|rear finish panel|bumper (cover|assembly|face bar)|^roof$|^roof panel$|rocker panel|^cab$|cab corner|cab back panel|^bed side$|^bed front panel$|^bed floor$|pickup bed (side|front panel|floor)/i;
+const SHEET_METAL_EXCLUDE_PATTERN =
+  /interior trim|^moulding|hinge|shock$|lock|latch|handle|regulator|motor|switch|glass|window|cable|ornament|insulation|prop$|scoop$|deflector/i;
+
+function isSheetMetal(name: string): boolean {
+  return (
+    SHEET_METAL_INCLUDE_PATTERN.test(name) &&
+    !SHEET_METAL_EXCLUDE_PATTERN.test(name)
+  );
+}
+
 function parseNames(raw: string): string[] {
   const names = raw
     .split(',')
@@ -137,11 +165,13 @@ export const TAXONOMY: Array<{
   category: string;
   isQuickPick: boolean;
   isExteriorVisual: boolean;
+  isSheetMetal: boolean;
 }> = parseNames(RAW_NAMES).map((name) => ({
   name,
   category: detectCategory(name),
   isQuickPick: QUICK_PICK_NAMES.has(name),
   isExteriorVisual: isExteriorVisual(name),
+  isSheetMetal: isSheetMetal(name),
 }));
 
 /**
@@ -204,6 +234,7 @@ export async function seedTaxonomy(): Promise<void> {
         category: item.category,
         isQuickPick: item.isQuickPick,
         isExteriorVisual: item.isExteriorVisual,
+        isSheetMetal: item.isSheetMetal,
       });
     } else {
       await repo.save(repo.create(item));

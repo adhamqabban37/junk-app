@@ -8,6 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
 import { AiAnalysisService } from '../src/ai/ai-analysis.service';
 import { GeminiRequestError, GeminiService } from '../src/ai/gemini.service';
+import { GradingService } from '../src/ai/grading.service';
 import { PartsService } from '../src/parts/parts.service';
 import { LocalFileStorage } from '../src/storage/local-file-storage';
 import { ENTITIES } from '../src/database/entities.list';
@@ -89,6 +90,7 @@ describe('AiAnalysisService (e2e)', () => {
       // vehicle-analysis.e2e-spec.ts for that) touches partsService, so an
       // empty stub is enough to satisfy the constructor here.
       {} as PartsService,
+      new GradingService(),
       new ConfigService({ GEMINI_MODEL: MODEL_VERSION }),
     );
 

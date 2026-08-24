@@ -4,9 +4,12 @@ import type { z } from 'zod';
 import {
   GeminiPartAnalysis,
   GeminiPartAnalysisSchema,
+  GeminiSheetMetalDamage,
+  GeminiSheetMetalDamageSchema,
   GeminiVehicleAnalysis,
   GeminiVehicleAnalysisSchema,
 } from './gemini-response.schema';
+import { AraDamageType, AraSeverity } from './grading.service';
 
 export class GeminiRequestError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
@@ -21,6 +24,31 @@ Respond with strict JSON only, matching this shape exactly:
 "A" = like-new/minimal wear, "B" = visible wear or minor damage, "C" = significant damage.
 damage_codes should be short lowercase tags (e.g. "scratch", "rust", "crack", "dent").
 confidence reflects how certain you are in this grade given image quality.`;
+
+/**
+ * ARA/Car-Part.com-style damage detection for one sheet-metal/body-panel
+ * part image. Deliberately never asks for a grade -- GradingService
+ * (grading.service.ts) is the only thing that computes one, from the
+ * itemized damage this returns. The type/severity vocabularies below must
+ * stay in sync with AraDamageType/AraSeverity (grading.service.ts); they're
+ * spelled out by name here since the prompt has to be human-readable, not
+ * a serialized enum.
+ */
+function buildSheetMetalDamagePrompt(taxonomyName: string): string {
+  return `You are inspecting a used ${taxonomyName} (an automotive sheet-metal/body panel) photographed at a salvage yard, using the ARA (Automotive Recyclers Association) damage-grading method Car-Part.com uses.
+
+First decide: is this photo clear enough (in focus, close enough, unobstructed) to actually assess this part's condition? If not -- too blurry, too far away, mostly out of frame, or otherwise impossible to judge -- set "assessable" to false and return an empty damage list. Do not guess at damage you can't actually see clearly.
+
+If it is assessable, identify every distinct instance of visible damage. For each one, report:
+- "location": where on the part it is, as a short phrase (e.g. "front edge", "lower left corner", "center", "upper right") -- describe it relative to the part itself, not the whole vehicle.
+- "damage_type": exactly one of: ${Object.values(AraDamageType).join(', ')}.
+- "severity": exactly one of: ${Object.values(AraSeverity).join(', ')} -- minor (barely noticeable, cosmetic only), moderate (clearly visible, would need repair), major (severe, affects usability or structural integrity).
+A part with no visible damage at all is a real, valid outcome -- return an empty damage list, not a guess.
+
+Respond with strict JSON only, matching this shape exactly:
+{"assessable": boolean, "damage": [{"location": string, "damage_type": string, "severity": string}], "confidence": number between 0 and 1}
+confidence reflects how certain you are in this assessment given image quality -- independent of "assessable" (a clear photo of an ambiguous case can still have moderate confidence; always report your real confidence, don't default it).`;
+}
 
 function buildVehicleGradingPrompt(candidateParts: string[]): string {
   return `You are grading the overall condition of a vehicle at a salvage yard, from a batch of its photos. There may be as few as 1 photo -- grade based on whatever is shown, do not ask for more. The photos given are all of the same general area of the vehicle (e.g. all front-of-vehicle shots, or all driver-side shots) and are listed in the order they were captured -- photos taken back-to-back are more likely to be different angles of the very same physical part, not different parts.
@@ -72,6 +100,25 @@ export class GeminiService {
       GRADING_PROMPT,
       [{ buffer: imageBuffer, mimeType }],
       GeminiPartAnalysisSchema,
+    );
+  }
+
+  /**
+   * ARA-style damage detection for one sheet-metal/body-panel part image
+   * -- see buildSheetMetalDamagePrompt()'s own comment for why this never
+   * returns a grade. `taxonomyName` is interpolated directly into the
+   * prompt (e.g. "Fender", "Front Door") to give Gemini the part identity
+   * it otherwise has no way to know from the image alone.
+   */
+  async analyzeSheetMetalDamage(
+    imageBuffer: Buffer,
+    mimeType: string,
+    taxonomyName: string,
+  ): Promise<GeminiSheetMetalDamage> {
+    return this.callGemini(
+      buildSheetMetalDamagePrompt(taxonomyName),
+      [{ buffer: imageBuffer, mimeType }],
+      GeminiSheetMetalDamageSchema,
     );
   }
 

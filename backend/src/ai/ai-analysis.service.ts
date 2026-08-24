@@ -21,6 +21,7 @@ import {
 } from '../storage/local-file-storage';
 import { GeminiService } from './gemini.service';
 import type { GeminiVehicleAnalysis } from './gemini-response.schema';
+import { GradingService, type AraDamageInstance } from './grading.service';
 
 @Injectable()
 export class AiAnalysisService {
@@ -31,6 +32,7 @@ export class AiAnalysisService {
     private readonly gemini: GeminiService,
     private readonly storage: LocalFileStorage,
     private readonly partsService: PartsService,
+    private readonly grading: GradingService,
     config: ConfigService,
   ) {
     this.modelVersion =
@@ -71,10 +73,59 @@ export class AiAnalysisService {
         .getRepository(PartImage)
         .findOneOrFail({ where: { id: partImageId } });
       const imageBuffer = await this.storage.read(partImage.url);
-      const analysis = await this.gemini.analyzePartImage(
-        imageBuffer,
-        'image/jpeg',
-      );
+
+      // Sheet-metal parts (fender, door, hood, quarter panel, bumper
+      // cover, etc. -- see part-taxonomy.entity.ts's isSheetMetal) get
+      // ARA-style damage-unit grading instead of Gemini's own holistic
+      // A/B/C judgment: Gemini only detects/itemizes damage here,
+      // GradingService is the sole place that turns that into a grade.
+      // Everything else keeps today's exact original behavior.
+      const part = await manager
+        .getRepository(Part)
+        .findOneOrFail({ where: { id: partImage.partId } });
+      const taxonomy = await manager
+        .getRepository(PartTaxonomy)
+        .findOne({ where: { id: part.taxonomyId } });
+
+      let grade: AiGrade;
+      let damageCodes: string[];
+      let confidence: number;
+      let rawJson: object;
+      let damageUnits: number | null = null;
+      let araDamageCodes: AraDamageInstance[] | null = null;
+
+      if (taxonomy?.isSheetMetal) {
+        const detection = await this.gemini.analyzeSheetMetalDamage(
+          imageBuffer,
+          'image/jpeg',
+          taxonomy.name,
+        );
+        const instances: AraDamageInstance[] = detection.damage.map((d) => ({
+          location: d.location,
+          damageType: d.damage_type,
+          severity: d.severity,
+          units: this.grading.unitsFor(d.damage_type, d.severity),
+        }));
+        const graded = this.grading.gradeSheetMetalPart(
+          instances,
+          detection.assessable,
+        );
+        grade = graded.grade;
+        damageUnits = graded.damageUnits;
+        araDamageCodes = instances;
+        damageCodes = this.grading.formatDamageCodes(instances);
+        confidence = detection.confidence;
+        rawJson = detection;
+      } else {
+        const analysis = await this.gemini.analyzePartImage(
+          imageBuffer,
+          'image/jpeg',
+        );
+        grade = analysis.grade as AiGrade;
+        damageCodes = analysis.damage_codes;
+        confidence = analysis.confidence;
+        rawJson = analysis;
+      }
 
       await analysisRepo.upsert(
         {
@@ -82,10 +133,12 @@ export class AiAnalysisService {
           partId: partImage.partId,
           partImageId,
           modelVersion: this.modelVersion,
-          rawJson: analysis,
-          grade: analysis.grade as AiGrade,
-          damageCodes: analysis.damage_codes,
-          confidence: analysis.confidence,
+          rawJson,
+          grade,
+          damageCodes,
+          confidence,
+          damageUnits,
+          araDamageCodes,
           status: AiAnalysisStatus.COMPLETE,
         },
         ['partImageId', 'modelVersion'],

@@ -1,12 +1,12 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import InventoryPage from "./page";
 import { useAuthSession } from "@/lib/auth-session";
 import type { PartListItem, PartListResult } from "@/lib/api/parts";
 
-vi.mock("@/lib/api/parts", () => ({ listParts: vi.fn() }));
-import { listParts } from "@/lib/api/parts";
+vi.mock("@/lib/api/parts", () => ({ listParts: vi.fn(), setPartPrice: vi.fn() }));
+import { listParts, setPartPrice } from "@/lib/api/parts";
 
 function makePart(i: number): PartListItem {
   return {
@@ -18,6 +18,7 @@ function makePart(i: number): PartListItem {
     vehicle: { id: "v1", vin: `VIN${i.toString().padStart(10, "0")}`, make: "Honda", model: "Accord", year: 2005 },
     photosCount: 1,
     firstImageId: null,
+    latestPrice: null,
     latestAnalysis: null,
   };
 }
@@ -30,6 +31,7 @@ describe("InventoryPage", () => {
       restored: true,
     });
     vi.mocked(listParts).mockReset();
+    vi.mocked(setPartPrice).mockReset();
 
     // jsdom performs no real layout -- @tanstack/react-virtual needs a
     // non-zero viewport to compute which rows are actually visible, and
@@ -98,5 +100,51 @@ describe("InventoryPage", () => {
         expect.objectContaining({ status: ["approved"] }),
       ),
     );
+  });
+
+  it("shows a placeholder for an unpriced part, and setting a price calls the API and updates the display", async () => {
+    vi.mocked(listParts).mockResolvedValue({ items: [makePart(1)], total: 1, page: 1, pageSize: 1000 });
+    vi.mocked(setPartPrice).mockResolvedValue({ status: "priced", price: 49.99 });
+    const user = userEvent.setup();
+
+    render(<InventoryPage />);
+    const row = await screen.findByTestId("inventory-row-part-1");
+    expect(within(row).getByRole("button", { name: "—" })).toBeInTheDocument();
+
+    await user.click(within(row).getByRole("button", { name: "—" }));
+    await user.type(within(row).getByRole("spinbutton"), "49.99");
+    await user.click(within(row).getByRole("button", { name: /save/i }));
+
+    await waitFor(() => expect(setPartPrice).toHaveBeenCalledWith("fake-token", "part-1", 49.99));
+    expect(await within(row).findByText("$49.99")).toBeInTheDocument();
+  });
+
+  it("shows an existing price and lets it be edited again", async () => {
+    const part = { ...makePart(1), latestPrice: "80.00" };
+    vi.mocked(listParts).mockResolvedValue({ items: [part], total: 1, page: 1, pageSize: 1000 });
+
+    render(<InventoryPage />);
+    const row = await screen.findByTestId("inventory-row-part-1");
+    expect(within(row).getByText("$80.00")).toBeInTheDocument();
+  });
+
+  it('shows "Ungraded" for a sheet-metal part the AI could not assess (ARA X grade)', async () => {
+    const part: PartListItem = {
+      ...makePart(1),
+      latestAnalysis: {
+        id: "a1",
+        grade: "X",
+        damageCodes: [],
+        confidence: 0.3,
+        status: "complete",
+        damageUnits: null,
+        araDamageCodes: null,
+      },
+    };
+    vi.mocked(listParts).mockResolvedValue({ items: [part], total: 1, page: 1, pageSize: 1000 });
+
+    render(<InventoryPage />);
+    const row = await screen.findByTestId("inventory-row-part-1");
+    expect(within(row).getByText("Ungraded")).toBeInTheDocument();
   });
 });

@@ -160,7 +160,7 @@ describe('Parts CSV export (e2e)', () => {
 
     const lines = res.text.trim().split('\n');
     expect(lines[0]).toBe(
-      'id,vin,title,description,grade,damage_codes,confidence,status,price',
+      'id,vin,title,description,grade,damage_units,damage_codes,confidence,status,price',
     );
     // Exactly one data row -- the pending_ai part must be excluded.
     expect(lines).toHaveLength(2);
