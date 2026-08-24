@@ -2,25 +2,53 @@
 
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { useAuthSession } from "@/lib/auth-session";
 import { fetchTaxonomy, type TaxonomyItemResponse } from "@/lib/api";
-import { getVehicle, type VehicleDetail } from "@/lib/api/vehicles";
+import { createManualPart, getVehicle, type VehicleDetail } from "@/lib/api/vehicles";
 import {
   assignVehiclePhotos,
   fetchVehiclePhotoBlob,
   listVehiclePhotos,
   type VehiclePhotoSummary,
 } from "@/lib/api/vehicle-photos";
-import { listParts, approvePart, type PartListItem } from "@/lib/api/parts";
+import { listParts, approvePart, setManualGrade, type PartListItem } from "@/lib/api/parts";
 import { VehiclePhotoThumb } from "@/components/desktop/vehicle-photo-thumb";
 import { GradeBadge } from "@/components/desktop/grade-badge";
 import { PartGradeBadge } from "@/components/desktop/part-grade-badge";
+import { TaxonomyPicker } from "@/components/desktop/taxonomy-picker";
 
-/** Per-part AI grade card: shows the taxonomy name, grade/damage/confidence once analysis completes, and an Approve action -- this is the "what did AI rate each part, so I can approve or not" view that was missing (the old Parts section only showed a bare status word). Re-grade lives on the Inventory tab instead, not here -- deliberate, per the user's own call. */
-function PartCard({ part, onApprove, approving }: { part: PartListItem; onApprove: () => void; approving: boolean }) {
+const GRADES = ["A", "B", "C", "X"] as const;
+
+/**
+ * Per-part AI grade card: shows the taxonomy name, grade/damage/confidence
+ * once analysis completes, and an Approve action -- this is the "what did
+ * AI rate each part, so I can approve or not" view that was missing (the
+ * old Parts section only showed a bare status word). Re-grade lives on the
+ * Inventory tab instead, not here -- deliberate, per the user's own call.
+ *
+ * A part added via "Add a part" below has no photo at all, so `photosCount`
+ * is 0 and `latestAnalysis` is null forever -- there is nothing for AI to
+ * grade. That's a different situation from a photo-assigned part whose
+ * analysis just hasn't finished yet (also `latestAnalysis: null`, but
+ * `photosCount > 0`), so it gets its own manual-grade picker instead of the
+ * misleading "Grading in progress" message.
+ */
+function PartCard({
+  part,
+  grade,
+  onPickGrade,
+  onApprove,
+  approving,
+}: {
+  part: PartListItem;
+  grade: string | null;
+  onPickGrade: (grade: string) => void;
+  onApprove: () => void;
+  approving: boolean;
+}) {
   const analysis = part.latestAnalysis;
   const alreadyDecided = part.status === "approved" || part.status === "listed" || part.status === "sold";
+  const isManual = !analysis && part.photosCount === 0;
 
   return (
     <li data-testid={`part-row-${part.id}`} className="flex flex-col gap-2 rounded-lg border border-border p-3">
@@ -33,7 +61,36 @@ function PartCard({ part, onApprove, approving }: { part: PartListItem; onApprov
         )}
       </div>
 
-      {!analysis || analysis.status === "pending" ? (
+      {isManual ? (
+        alreadyDecided ? null : (
+          <>
+            <p className="text-xs text-muted-foreground">No photo — grade it yourself, then approve.</p>
+            <div className="flex items-center gap-2">
+              <label htmlFor={`grade-${part.id}`} className="text-xs font-medium text-muted-foreground">
+                Grade
+              </label>
+              <select
+                id={`grade-${part.id}`}
+                value={grade ?? ""}
+                onChange={(e) => onPickGrade(e.target.value)}
+                className="block rounded-lg border border-input bg-transparent px-2 py-1.5 text-sm"
+              >
+                <option value="" disabled>
+                  —
+                </option>
+                {GRADES.map((g) => (
+                  <option key={g} value={g}>
+                    {g}
+                  </option>
+                ))}
+              </select>
+              <Button type="button" size="sm" variant="outline" disabled={!grade || approving} onClick={onApprove}>
+                {approving ? "Approving…" : "Approve"}
+              </Button>
+            </div>
+          </>
+        )
+      ) : !analysis || analysis.status === "pending" ? (
         <p className="text-xs text-muted-foreground">Grading in progress…</p>
       ) : analysis.status === "failed" ? (
         <p className="text-xs text-destructive">AI grading failed — needs manual grading in the Review Queue.</p>
@@ -138,10 +195,15 @@ export default function VehicleDetailPageClient({ vehicleId }: { vehicleId: stri
   const [error, setError] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const [approvingPartId, setApprovingPartId] = useState<string | null>(null);
+  // Grade a manager picked for a manually-added (no-photo) part -- there's
+  // no AiAnalysis row to read a grade from, so this is the only source of
+  // truth until it's submitted via setManualGrade() on approve.
+  const [gradeOverrides, setGradeOverrides] = useState<Record<string, string>>({});
   const [selectedPhotoIds, setSelectedPhotoIds] = useState<Set<string>>(new Set());
-  const [taxonomyQuery, setTaxonomyQuery] = useState("");
   const [selectedTaxonomyId, setSelectedTaxonomyId] = useState<string | null>(null);
   const [assigning, setAssigning] = useState(false);
+  const [addPartTaxonomyId, setAddPartTaxonomyId] = useState<string | null>(null);
+  const [addingPart, setAddingPart] = useState(false);
   // Photos assigned to at least one part this session -- the backend keeps
   // the photo around after assigning (a single photo can show more than one
   // part, e.g. bumper + headlight in the same frame), so this is purely a
@@ -173,16 +235,39 @@ export default function VehicleDetailPageClient({ vehicleId }: { vehicleId: stri
     };
   }, [token, vehicleId, attempt]);
 
-  async function handleApprovePart(partId: string) {
+  // The grade a part would actually be approved with: AI's if it has one,
+  // otherwise whatever the manager just picked for a no-photo manual part.
+  function gradeFor(part: PartListItem): string | null {
+    return part.latestAnalysis?.grade ?? gradeOverrides[part.id] ?? null;
+  }
+
+  async function handleApprovePart(part: PartListItem) {
     if (!token || approvingPartId) return;
-    setApprovingPartId(partId);
+    const grade = gradeFor(part);
+    if (!grade) return;
+    setApprovingPartId(part.id);
     try {
-      await approvePart(token, partId);
+      if (!part.latestAnalysis) {
+        await setManualGrade(token, part.id, grade);
+      }
+      await approvePart(token, part.id);
       setParts((prev) =>
-        prev ? prev.map((p) => (p.id === partId ? { ...p, status: "approved" } : p)) : prev,
+        prev ? prev.map((p) => (p.id === part.id ? { ...p, status: "approved" } : p)) : prev,
       );
     } finally {
       setApprovingPartId(null);
+    }
+  }
+
+  async function handleAddPart() {
+    if (!token || !addPartTaxonomyId || addingPart) return;
+    setAddingPart(true);
+    try {
+      await createManualPart(token, vehicleId, addPartTaxonomyId);
+      setAddPartTaxonomyId(null);
+      setAttempt((n) => n + 1);
+    } finally {
+      setAddingPart(false);
     }
   }
 
@@ -244,11 +329,6 @@ export default function VehicleDetailPageClient({ vehicleId }: { vehicleId: stri
     return <p className="text-sm text-muted-foreground">Loading…</p>;
   }
 
-  const quickPicks = taxonomies.filter((t) => t.isQuickPick);
-  const shownTaxonomies = taxonomyQuery
-    ? taxonomies.filter((t) => t.name.toLowerCase().includes(taxonomyQuery.toLowerCase()))
-    : quickPicks;
-
   return (
     <div className="flex flex-col gap-8">
       <div className="flex items-start justify-between gap-4">
@@ -276,12 +356,33 @@ export default function VehicleDetailPageClient({ vehicleId }: { vehicleId: stri
               <PartCard
                 key={part.id}
                 part={part}
+                grade={gradeFor(part)}
+                onPickGrade={(g) => setGradeOverrides((prev) => ({ ...prev, [part.id]: g }))}
                 approving={approvingPartId === part.id}
-                onApprove={() => void handleApprovePart(part.id)}
+                onApprove={() => void handleApprovePart(part)}
               />
             ))}
           </ul>
         )}
+      </section>
+
+      <section data-testid="add-part-panel" className="space-y-3 rounded-xl border border-border p-4">
+        <div>
+          <p className="text-sm font-medium">Add a part</p>
+          <p className="text-xs text-muted-foreground">
+            For a part that isn&apos;t in any photo -- e.g. an interior or engine-bay part. This skips AI entirely;
+            grade it yourself above once it&apos;s added.
+          </p>
+        </div>
+        <TaxonomyPicker taxonomies={taxonomies} selectedId={addPartTaxonomyId} onSelect={setAddPartTaxonomyId} />
+        <Button
+          type="button"
+          className="w-full"
+          disabled={!addPartTaxonomyId || addingPart}
+          onClick={() => void handleAddPart()}
+        >
+          {addingPart ? "Adding…" : "Add part"}
+        </Button>
       </section>
 
       <section className="space-y-3">
@@ -342,34 +443,20 @@ export default function VehicleDetailPageClient({ vehicleId }: { vehicleId: stri
               ))}
             </div>
 
-            <div className="space-y-3 rounded-xl border border-border p-4">
+            <div data-testid="assign-photo-panel" className="space-y-3 rounded-xl border border-border p-4">
               <div>
                 <p className="text-sm font-medium">Assign to a part</p>
                 <p className="text-xs text-muted-foreground">
-                  Optional -- only needed to catalog a specific part for the marketplace. Grading above already
-                  happens automatically from every photo on this vehicle.
+                  Only for a part actually visible in one of these photos. For a part with no photo at all --
+                  interior or engine-bay parts, usually -- use &quot;Add a part&quot; above instead.
                 </p>
               </div>
               <p className="text-sm font-medium">{selectedPhotoIds.size} photo(s) selected</p>
-              <Input
-                aria-label="Search taxonomy"
-                placeholder="Search parts…"
-                value={taxonomyQuery}
-                onChange={(e) => setTaxonomyQuery(e.target.value)}
+              <TaxonomyPicker
+                taxonomies={taxonomies}
+                selectedId={selectedTaxonomyId}
+                onSelect={setSelectedTaxonomyId}
               />
-              <div className="flex flex-wrap gap-2">
-                {shownTaxonomies.map((t) => (
-                  <Button
-                    key={t.id}
-                    type="button"
-                    variant={selectedTaxonomyId === t.id ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setSelectedTaxonomyId(t.id)}
-                  >
-                    {t.name}
-                  </Button>
-                ))}
-              </div>
               <Button
                 type="button"
                 className="w-full"

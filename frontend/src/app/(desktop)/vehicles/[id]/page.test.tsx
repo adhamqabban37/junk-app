@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import VehicleDetailPageClient from "./vehicle-detail-page-client";
@@ -7,25 +7,25 @@ import type { VehicleDetail } from "@/lib/api/vehicles";
 import type { VehiclePhotoSummary } from "@/lib/api/vehicle-photos";
 import type { TaxonomyItemResponse } from "@/lib/api";
 
-vi.mock("@/lib/api/vehicles", () => ({ getVehicle: vi.fn() }));
+vi.mock("@/lib/api/vehicles", () => ({ getVehicle: vi.fn(), createManualPart: vi.fn() }));
 vi.mock("@/lib/api/vehicle-photos", () => ({
   listVehiclePhotos: vi.fn(),
   assignVehiclePhotos: vi.fn(),
   fetchVehiclePhotoBlob: vi.fn(),
 }));
-vi.mock("@/lib/api/parts", () => ({ listParts: vi.fn(), approvePart: vi.fn() }));
+vi.mock("@/lib/api/parts", () => ({ listParts: vi.fn(), approvePart: vi.fn(), setManualGrade: vi.fn() }));
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
   return { ...actual, fetchTaxonomy: vi.fn() };
 });
 
-import { getVehicle } from "@/lib/api/vehicles";
+import { getVehicle, createManualPart } from "@/lib/api/vehicles";
 import {
   assignVehiclePhotos,
   fetchVehiclePhotoBlob,
   listVehiclePhotos,
 } from "@/lib/api/vehicle-photos";
-import { listParts, approvePart, type PartListItem } from "@/lib/api/parts";
+import { listParts, approvePart, setManualGrade, type PartListItem } from "@/lib/api/parts";
 import { fetchTaxonomy } from "@/lib/api";
 
 function makeVehicle(overrides: Partial<VehicleDetail> = {}): VehicleDetail {
@@ -92,6 +92,8 @@ describe("VehicleDetailPageClient", () => {
     vi.mocked(fetchTaxonomy).mockReset();
     vi.mocked(listParts).mockReset();
     vi.mocked(approvePart).mockReset();
+    vi.mocked(setManualGrade).mockReset();
+    vi.mocked(createManualPart).mockReset();
     vi.mocked(fetchVehiclePhotoBlob).mockResolvedValue(new Blob(["x"], { type: "image/jpeg" }));
     vi.mocked(fetchTaxonomy).mockResolvedValue(taxonomies);
     // Most tests don't care about parts -- default to empty so they don't
@@ -134,7 +136,7 @@ describe("VehicleDetailPageClient", () => {
     await screen.findByTestId("unassigned-photo-photo-1");
 
     await user.click(screen.getByTestId("unassigned-photo-photo-1"));
-    await user.click(screen.getByRole("button", { name: "Alternator" }));
+    await user.click(within(screen.getByTestId("assign-photo-panel")).getByRole("button", { name: "Alternator" }));
 
     const assignButton = screen.getByRole("button", { name: /assign 1 photo/i });
     await waitFor(() => expect(assignButton).toBeEnabled());
@@ -345,16 +347,17 @@ describe("VehicleDetailPageClient", () => {
     expect(screen.getByText(/approved/i)).toBeInTheDocument();
   });
 
-  it("shows 'grading in progress' for a part with no analysis yet, and a manual-grading note when it failed", async () => {
+  it("shows 'grading in progress' for a photo-assigned part with no analysis yet, and a manual-grading note when it failed", async () => {
     vi.mocked(getVehicle).mockResolvedValue(makeVehicle());
     vi.mocked(listVehiclePhotos).mockResolvedValue([]);
     vi.mocked(listParts).mockResolvedValue({
       items: [
-        makePart({ id: "part-pending", taxonomyName: "Hood", latestAnalysis: null }),
+        makePart({ id: "part-pending", taxonomyName: "Hood", photosCount: 1, latestAnalysis: null }),
         makePart({
           id: "part-failed",
           taxonomyName: "Fender",
           status: "needs_manual_grading",
+          photosCount: 1,
           latestAnalysis: { id: "a2", grade: null, damageCodes: [], confidence: null, status: "failed", damageUnits: null, araDamageCodes: null },
         }),
       ],
@@ -367,6 +370,52 @@ describe("VehicleDetailPageClient", () => {
 
     expect(await screen.findByText(/grading in progress/i)).toBeInTheDocument();
     expect(screen.getByText(/needs manual grading/i)).toBeInTheDocument();
+  });
+
+  it("adds a photo-less part directly from the vehicle page, without touching AI", async () => {
+    vi.mocked(getVehicle).mockResolvedValue(makeVehicle());
+    vi.mocked(listVehiclePhotos).mockResolvedValue([]);
+    vi.mocked(listParts).mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 200 });
+    vi.mocked(createManualPart).mockResolvedValue({ partId: "new-part-1" });
+    const user = userEvent.setup();
+
+    render(<VehicleDetailPageClient vehicleId="v1" />);
+    await screen.findByText(/add a part/i);
+
+    await user.click(screen.getByRole("button", { name: "Alternator" }));
+    await user.click(screen.getByRole("button", { name: /^add part$/i }));
+
+    await waitFor(() => expect(createManualPart).toHaveBeenCalledWith("fake-token", "v1", "tax-1"));
+  });
+
+  it("lets a manager grade and approve a photo-less (manually-added) part without any AI call", async () => {
+    vi.mocked(getVehicle).mockResolvedValue(makeVehicle());
+    vi.mocked(listVehiclePhotos).mockResolvedValue([]);
+    vi.mocked(listParts).mockResolvedValue({
+      items: [makePart({ id: "part-manual", taxonomyName: "Alternator", photosCount: 0, latestAnalysis: null })],
+      total: 1,
+      page: 1,
+      pageSize: 200,
+    });
+    vi.mocked(setManualGrade).mockResolvedValue({ status: "graded", grade: "B" });
+    vi.mocked(approvePart).mockResolvedValue({ status: "approved" });
+    const user = userEvent.setup();
+
+    render(<VehicleDetailPageClient vehicleId="v1" />);
+    await screen.findByTestId("part-row-part-manual");
+
+    // Never claims to be grading -- there's no photo for AI to grade from.
+    expect(screen.queryByText(/grading in progress/i)).not.toBeInTheDocument();
+    const approveButton = screen.getByRole("button", { name: /^approve$/i });
+    expect(approveButton).toBeDisabled();
+
+    await user.selectOptions(screen.getByLabelText(/grade/i), "B");
+    expect(approveButton).toBeEnabled();
+    await user.click(approveButton);
+
+    await waitFor(() => expect(setManualGrade).toHaveBeenCalledWith("fake-token", "part-manual", "B"));
+    expect(approvePart).toHaveBeenCalledWith("fake-token", "part-manual");
+    expect(screen.getByText(/approved/i)).toBeInTheDocument();
   });
 
   it('shows "Ungraded" and hides Approve for a sheet-metal part the AI could not assess (ARA X grade)', async () => {

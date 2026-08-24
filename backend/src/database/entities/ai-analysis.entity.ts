@@ -33,13 +33,18 @@ export class AiAnalysis {
   @Column({ name: 'part_id', type: 'uuid' })
   partId!: string;
 
-  @Column({ name: 'part_image_id', type: 'uuid' })
-  partImageId!: string;
+  /** Null for a manually-graded row (modelVersion: 'manual') on a Part with no photo at all -- e.g. an alternator inside the engine no picture ever shows. Every AI-produced row still always has a real image. */
+  @Column({ name: 'part_image_id', type: 'uuid', nullable: true })
+  partImageId!: string | null;
 
   /**
    * Idempotency key alongside part_image_id: a unique (part_image_id,
    * model_version) pair means a retried BullMQ job for the same image and
-   * model can never write a duplicate row.
+   * model can never write a duplicate row. Postgres treats NULL as
+   * distinct from NULL in a unique index, so this does NOT dedupe manual
+   * (null part_image_id) rows -- PartsService.recordManualGrade() finds
+   * and updates its own manual row by (partId, modelVersion) instead of
+   * relying on this index for that case.
    */
   @Column({ name: 'model_version', type: 'varchar', length: 100 })
   modelVersion!: string;

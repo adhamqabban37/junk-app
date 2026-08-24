@@ -89,6 +89,25 @@ export function regradePart(token: string, id: string, fetchImpl?: typeof fetch)
   return authFetch<{ status: string }>(`/parts/${id}/regrade`, { token, method: "POST" }, fetchImpl);
 }
 
+/** Manager-entered grade for a part with no photo at all (e.g. an alternator inside the engine) -- there's no AI analysis to correct, so this creates/updates the one directly instead of going through recordCorrection(). */
+export function setManualGrade(
+  token: string,
+  id: string,
+  grade: string,
+  fetchImpl?: typeof fetch,
+): Promise<{ status: string; grade: string }> {
+  return authFetch<{ status: string; grade: string }>(
+    `/parts/${id}/manual-grade`,
+    {
+      token,
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ grade }),
+    },
+    fetchImpl,
+  );
+}
+
 /** Manager backstop for the AI still splitting one physical part into several Parts (duplicate-detection isn't perfect across separate upload sessions/sections) -- folds sourcePartIds' photos and grades onto `id`, then deletes the source Parts. Returns the merged part's fresh detail. */
 export function mergeParts(
   token: string,

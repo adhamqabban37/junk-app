@@ -4,12 +4,13 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useAuthSession } from "@/lib/auth-session";
-import { approvePart, listParts, mergeParts, regradePart, type PartListItem } from "@/lib/api/parts";
+import { approvePart, listParts, mergeParts, setManualGrade, type PartListItem } from "@/lib/api/parts";
 import { getSettings } from "@/lib/api/settings";
 import { recordCorrection } from "@/lib/api/corrections";
 import { fetchTaxonomy, type TaxonomyItemResponse } from "@/lib/api";
 import { createManualPart, listVehicles, type VehicleListItem } from "@/lib/api/vehicles";
 import { PartImageThumb } from "@/components/desktop/part-image-thumb";
+import { TaxonomyPicker } from "@/components/desktop/taxonomy-picker";
 
 const GRADES = ["A", "B", "C", "X"] as const;
 
@@ -39,7 +40,6 @@ function AddPartPanel({ token, onAdded }: { token: string; onAdded: () => void }
   const [taxonomies, setTaxonomies] = useState<TaxonomyItemResponse[] | null>(null);
   const [vehicleQuery, setVehicleQuery] = useState("");
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
-  const [taxonomyQuery, setTaxonomyQuery] = useState("");
   const [selectedTaxonomyId, setSelectedTaxonomyId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -57,11 +57,6 @@ function AddPartPanel({ token, onAdded }: { token: string; onAdded: () => void }
     .filter((v) => (vehicleQuery ? vehicleLabel(v).toLowerCase().includes(vehicleQuery.toLowerCase()) : true))
     .slice(0, 20);
 
-  const quickPicks = (taxonomies ?? []).filter((t) => t.isQuickPick);
-  const shownTaxonomies = taxonomyQuery
-    ? (taxonomies ?? []).filter((t) => t.name.toLowerCase().includes(taxonomyQuery.toLowerCase()))
-    : quickPicks;
-
   async function handleSubmit() {
     if (!token || !selectedVehicleId || !selectedTaxonomyId || submitting) return;
     setSubmitting(true);
@@ -70,7 +65,6 @@ function AddPartPanel({ token, onAdded }: { token: string; onAdded: () => void }
       setSelectedVehicleId(null);
       setSelectedTaxonomyId(null);
       setVehicleQuery("");
-      setTaxonomyQuery("");
       onAdded();
     } finally {
       setSubmitting(false);
@@ -109,27 +103,11 @@ function AddPartPanel({ token, onAdded }: { token: string; onAdded: () => void }
         </div>
       </div>
 
-      <div className="space-y-2">
-        <Input
-          aria-label="Search taxonomy"
-          placeholder="Search parts…"
-          value={taxonomyQuery}
-          onChange={(e) => setTaxonomyQuery(e.target.value)}
-        />
-        <div className="flex flex-wrap gap-2">
-          {shownTaxonomies.map((t) => (
-            <Button
-              key={t.id}
-              type="button"
-              variant={selectedTaxonomyId === t.id ? "default" : "outline"}
-              size="sm"
-              onClick={() => setSelectedTaxonomyId(t.id)}
-            >
-              {t.name}
-            </Button>
-          ))}
-        </div>
-      </div>
+      <TaxonomyPicker
+        taxonomies={taxonomies ?? []}
+        selectedId={selectedTaxonomyId}
+        onSelect={setSelectedTaxonomyId}
+      />
 
       <Button
         type="button"
@@ -150,13 +128,13 @@ export default function ReviewQueuePage() {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [gradeOverrides, setGradeOverrides] = useState<Record<string, string>>({});
   const [submittingId, setSubmittingId] = useState<string | null>(null);
-  const [regradingId, setRegradingId] = useState<string | null>(null);
   const [error, setError] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const [showAddPart, setShowAddPart] = useState(false);
   const [mergeMode, setMergeMode] = useState(false);
   const [selectedForMerge, setSelectedForMerge] = useState<Set<string>>(new Set());
   const [merging, setMerging] = useState(false);
+  const [bulkApproving, setBulkApproving] = useState(false);
 
   useEffect(() => {
     if (!token) return;
@@ -173,28 +151,54 @@ export default function ReviewQueuePage() {
       .catch(() => setError(true));
   }, [token, attempt]);
 
+  // The grade an item would actually be approved with: a manager's picked
+  // override if there is one, otherwise whatever AI already produced.
+  // null means there's nothing to approve with yet -- a manually-added
+  // part (no photo, so no AI analysis at all) needs a grade picked first.
+  function gradeFor(item: PartListItem): string | null {
+    return gradeOverrides[item.id] ?? item.latestAnalysis?.grade ?? null;
+  }
+
+  // Shared by the single and bulk approve paths so they can never drift --
+  // a manually-added part (no AiAnalysis to correct) records its grade
+  // directly via setManualGrade() instead of recordCorrection(), which
+  // requires an existing analysis row and would 404 here.
+  async function approveOne(authToken: string, item: PartListItem): Promise<void> {
+    const grade = gradeFor(item);
+    if (!grade) return;
+    if (item.latestAnalysis) {
+      if (grade !== item.latestAnalysis.grade) {
+        await recordCorrection(authToken, item.latestAnalysis.id, "grade", grade);
+      }
+    } else {
+      await setManualGrade(authToken, item.id, grade);
+    }
+    await approvePart(authToken, item.id);
+  }
+
   async function handleApprove(item: PartListItem) {
-    if (!token || !item.latestAnalysis || submittingId) return;
+    if (!token || submittingId || bulkApproving || !gradeFor(item)) return;
     setSubmittingId(item.id);
     try {
-      const overrideGrade = gradeOverrides[item.id];
-      if (overrideGrade && overrideGrade !== item.latestAnalysis.grade) {
-        await recordCorrection(token, item.latestAnalysis.id, "grade", overrideGrade);
-      }
-      await approvePart(token, item.id);
+      await approveOne(token, item);
       setItems((prev) => (prev ? prev.filter((p) => p.id !== item.id) : prev));
     } finally {
       setSubmittingId(null);
     }
   }
 
-  async function handleRegrade(item: PartListItem) {
-    if (!token || regradingId) return;
-    setRegradingId(item.id);
+  const approvableItems = (items ?? []).filter((item) => gradeFor(item) !== null);
+
+  async function handleApproveAll() {
+    if (!token || bulkApproving || submittingId || approvableItems.length === 0) return;
+    setBulkApproving(true);
     try {
-      await regradePart(token, item.id);
+      for (const item of approvableItems) {
+        await approveOne(token, item);
+      }
+      setAttempt((n) => n + 1);
     } finally {
-      setRegradingId(null);
+      setBulkApproving(false);
     }
   }
 
@@ -257,8 +261,8 @@ export default function ReviewQueuePage() {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- handleApprove closes over gradeOverrides/token/submittingId intentionally re-read fresh each render via the effect re-subscribing
-  }, [items, clampedIndex, gradeOverrides, token, submittingId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- handleApprove closes over gradeOverrides/token/submittingId/bulkApproving intentionally re-read fresh each render via the effect re-subscribing
+  }, [items, clampedIndex, gradeOverrides, token, submittingId, bulkApproving]);
 
   let content: React.ReactNode;
   if (error) {
@@ -368,20 +372,8 @@ export default function ReviewQueuePage() {
                       ))}
                     </select>
                   </div>
-                  {item.photosCount > 0 && (
-                    <Button
-                      variant="outline"
-                      disabled={regradingId === item.id}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void handleRegrade(item);
-                      }}
-                    >
-                      {regradingId === item.id ? "Re-grading…" : "Re-grade"}
-                    </Button>
-                  )}
                   <Button
-                    disabled={submittingId === item.id}
+                    disabled={submittingId === item.id || bulkApproving || !gradeFor(item)}
                     onClick={(e) => {
                       e.stopPropagation();
                       void handleApprove(item);
@@ -408,6 +400,14 @@ export default function ReviewQueuePage() {
           </Button>
           <Button type="button" variant="outline" size="sm" onClick={() => setShowAddPart((v) => !v)}>
             {showAddPart ? "Cancel" : "Add a part"}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            disabled={approvableItems.length === 0 || bulkApproving || submittingId !== null}
+            onClick={() => void handleApproveAll()}
+          >
+            {bulkApproving ? "Approving…" : `Approve all (${approvableItems.length})`}
           </Button>
         </div>
       </div>

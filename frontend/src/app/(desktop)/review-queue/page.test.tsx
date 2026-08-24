@@ -8,8 +8,8 @@ import type { PartListItem, PartListResult } from "@/lib/api/parts";
 vi.mock("@/lib/api/parts", () => ({
   listParts: vi.fn(),
   approvePart: vi.fn(),
-  regradePart: vi.fn(),
   mergeParts: vi.fn(),
+  setManualGrade: vi.fn(),
   fetchPartImageBlob: vi.fn(),
 }));
 vi.mock("@/lib/api/settings", () => ({
@@ -26,7 +26,7 @@ vi.mock("@/lib/api/vehicles", () => ({
   createManualPart: vi.fn(),
 }));
 
-import { approvePart, fetchPartImageBlob, listParts, mergeParts, regradePart } from "@/lib/api/parts";
+import { approvePart, fetchPartImageBlob, listParts, mergeParts, setManualGrade } from "@/lib/api/parts";
 import { getSettings } from "@/lib/api/settings";
 import { recordCorrection } from "@/lib/api/corrections";
 import { fetchTaxonomy } from "@/lib/api";
@@ -71,8 +71,8 @@ describe("ReviewQueuePage", () => {
     vi.mocked(approvePart).mockReset();
     vi.mocked(getSettings).mockReset();
     vi.mocked(recordCorrection).mockReset();
-    vi.mocked(regradePart).mockReset();
     vi.mocked(mergeParts).mockReset();
+    vi.mocked(setManualGrade).mockReset();
     vi.mocked(fetchPartImageBlob).mockReset();
     vi.mocked(fetchTaxonomy).mockReset();
     vi.mocked(listVehicles).mockReset();
@@ -168,6 +168,29 @@ describe("ReviewQueuePage", () => {
     expect(approvePart).toHaveBeenCalledWith("fake-token", "part-1");
   });
 
+  it("a manually-added part (no photo, no AI analysis) records a manual grade instead of a correction, then approves", async () => {
+    vi.mocked(listParts).mockResolvedValue(
+      makeListResult([makePart({ latestAnalysis: null, photosCount: 0 })]),
+    );
+    vi.mocked(setManualGrade).mockResolvedValue({ status: "graded", grade: "B" });
+    vi.mocked(approvePart).mockResolvedValue({ status: "approved" });
+    const user = userEvent.setup();
+
+    render(<ReviewQueuePage />);
+    const card = await screen.findByTestId("review-item-part-1");
+
+    // Nothing to approve with yet -- no grade picked.
+    expect(within(card).getByRole("button", { name: /^approve$/i })).toBeDisabled();
+
+    await user.selectOptions(within(card).getByLabelText(/grade/i), "B");
+    await user.click(within(card).getByRole("button", { name: /^approve$/i }));
+
+    await waitFor(() => expect(setManualGrade).toHaveBeenCalledWith("fake-token", "part-1", "B"));
+    expect(recordCorrection).not.toHaveBeenCalled();
+    expect(approvePart).toHaveBeenCalledWith("fake-token", "part-1");
+    await waitFor(() => expect(screen.queryByTestId("review-item-part-1")).not.toBeInTheDocument());
+  });
+
   it("supports keyboard navigation between queue items with ArrowDown/ArrowUp", async () => {
     const partA = makePart({ id: "a" });
     const partB = makePart({ id: "b" });
@@ -233,31 +256,8 @@ describe("ReviewQueuePage", () => {
     expect(fetchPartImageBlob).not.toHaveBeenCalled();
   });
 
-  it("re-grade button calls the regrade endpoint and shows a busy state while in flight", async () => {
-    let resolveRegrade: (() => void) | undefined;
-    vi.mocked(regradePart).mockReturnValue(
-      new Promise((resolve) => {
-        resolveRegrade = () => resolve({ status: "regrading" });
-      }),
-    );
+  it("does not show a re-grade button -- just the grade display and the A/B/C/X override select", async () => {
     vi.mocked(listParts).mockResolvedValue(makeListResult([makePart()]));
-    const user = userEvent.setup();
-
-    render(<ReviewQueuePage />);
-    const card = await screen.findByTestId("review-item-part-1");
-    await user.click(within(card).getByRole("button", { name: /^re-grade$/i }));
-
-    expect(regradePart).toHaveBeenCalledWith("fake-token", "part-1");
-    expect(within(card).getByRole("button", { name: /re-grading/i })).toBeDisabled();
-
-    resolveRegrade?.();
-    await waitFor(() => expect(within(card).getByRole("button", { name: /^re-grade$/i })).not.toBeDisabled());
-  });
-
-  it("does not show a re-grade button for a manually-added part with no photos", async () => {
-    vi.mocked(listParts).mockResolvedValue(
-      makeListResult([makePart({ photosCount: 0, latestAnalysis: null })]),
-    );
     render(<ReviewQueuePage />);
     const card = await screen.findByTestId("review-item-part-1");
     expect(within(card).queryByRole("button", { name: /re-grade/i })).not.toBeInTheDocument();
@@ -296,8 +296,8 @@ describe("ReviewQueuePage", () => {
 
     await user.click(screen.getByRole("button", { name: /add a part/i }));
     await user.click(await screen.findByRole("button", { name: /Honda Accord.*VIN1234567890123/i }));
-    await user.type(screen.getByLabelText(/search taxonomy/i), "Alt");
-    await user.click(await screen.findByRole("button", { name: "Alternator" }));
+    await user.type(screen.getByLabelText(/search parts/i), "Alt");
+    await user.click(await screen.findByRole("option", { name: "Alternator" }));
     await user.click(screen.getByRole("button", { name: /^add part$/i }));
 
     await waitFor(() =>
@@ -305,6 +305,43 @@ describe("ReviewQueuePage", () => {
     );
     // Panel closes and the queue refetches after a successful add.
     await waitFor(() => expect(listParts).toHaveBeenCalledTimes(2));
+  });
+
+  describe("Approve all", () => {
+    it("shows the actually-approvable count, approves each one, and leaves an item with no grade picked in the queue", async () => {
+      const graded = makePart({ id: "graded" });
+      const manual = makePart({ id: "manual", latestAnalysis: null, photosCount: 0 });
+      const ungraded = makePart({ id: "ungraded", latestAnalysis: null, photosCount: 0 });
+      vi.mocked(listParts).mockResolvedValue(makeListResult([graded, manual, ungraded]));
+      vi.mocked(setManualGrade).mockResolvedValue({ status: "graded", grade: "A" });
+      vi.mocked(approvePart).mockResolvedValue({ status: "approved" });
+      const user = userEvent.setup();
+
+      render(<ReviewQueuePage />);
+      await screen.findByTestId("review-item-graded");
+      // Pick a grade for the manually-added part -- "ungraded" is left with
+      // none, so only 2 of the 3 items are actually approvable right now.
+      await user.selectOptions(within(screen.getByTestId("review-item-manual")).getByLabelText(/grade/i), "A");
+
+      const approveAllButton = screen.getByRole("button", { name: /approve all \(2\)/i });
+      await user.click(approveAllButton);
+
+      await waitFor(() => expect(approvePart).toHaveBeenCalledWith("fake-token", "graded"));
+      expect(approvePart).toHaveBeenCalledWith("fake-token", "manual");
+      expect(approvePart).not.toHaveBeenCalledWith("fake-token", "ungraded");
+      expect(setManualGrade).toHaveBeenCalledWith("fake-token", "manual", "A");
+      // Refetches once, rather than trying to splice items locally.
+      await waitFor(() => expect(listParts).toHaveBeenCalledTimes(2));
+    });
+
+    it("disables Approve all when nothing in the queue has a grade yet", async () => {
+      vi.mocked(listParts).mockResolvedValue(
+        makeListResult([makePart({ latestAnalysis: null, photosCount: 0 })]),
+      );
+      render(<ReviewQueuePage />);
+      await screen.findByTestId("review-item-part-1");
+      expect(screen.getByRole("button", { name: /approve all \(0\)/i })).toBeDisabled();
+    });
   });
 
   describe("Merge duplicates", () => {

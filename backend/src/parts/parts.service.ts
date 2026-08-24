@@ -6,7 +6,13 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import type { Queue } from 'bullmq';
-import { DataSource, EntityManager, FindOptionsWhere, In } from 'typeorm';
+import {
+  DataSource,
+  EntityManager,
+  FindOptionsWhere,
+  In,
+  IsNull,
+} from 'typeorm';
 import { AI_ANALYSIS_QUEUE, AiAnalysisJobData } from '../ai/ai-queue.constants';
 import {
   AiAnalysis,
@@ -168,6 +174,58 @@ export class PartsService {
           'analyze',
           { tenantId, partImageId: image.id, force: true },
           { attempts: 3, backoff: { type: 'exponential', delay: 2000 } },
+        );
+      }
+    });
+  }
+
+  /**
+   * Records a grade the manager entered directly for a Part with no
+   * photo at all -- e.g. an alternator inside the engine, created via
+   * createManual()/createManualInTransaction(). Every other grade lives
+   * on an AiAnalysis row keyed to a real PartImage; this creates/updates
+   * the one exception (`part_image_id: null`, `model_version: 'manual'`)
+   * so the *existing* worst-grade-wins aggregation in list()/detail()
+   * (see aggregatePartAnalysis() above) picks it up completely unchanged
+   * -- Inventory, Review Queue, and CSV export all already read grades
+   * that way, so nothing else needs to know this row didn't come from AI.
+   * Finds its own manual row by (partId, modelVersion) rather than
+   * part_image_id -- that column is null here, and a plain unique index
+   * treats every NULL as distinct, so it can't be used as the upsert key
+   * the way analyzePartImage() uses (partImageId, modelVersion) for a
+   * real photo.
+   */
+  async recordManualGrade(
+    tenantId: string,
+    partId: string,
+    grade: AiGrade,
+  ): Promise<void> {
+    await withTenantContext(this.dataSource, tenantId, async (manager) => {
+      const part = await manager
+        .getRepository(Part)
+        .findOne({ where: { id: partId } });
+      if (!part) {
+        throw new NotFoundException('Part not found');
+      }
+      const analysisRepo = manager.getRepository(AiAnalysis);
+      const existing = await analysisRepo.findOne({
+        where: { partId, partImageId: IsNull(), modelVersion: 'manual' },
+      });
+      if (existing) {
+        await analysisRepo.update({ id: existing.id }, { grade });
+      } else {
+        await analysisRepo.save(
+          analysisRepo.create({
+            tenantId,
+            partId,
+            partImageId: null,
+            modelVersion: 'manual',
+            rawJson: null,
+            grade,
+            damageCodes: [],
+            confidence: null,
+            status: AiAnalysisStatus.COMPLETE,
+          }),
         );
       }
     });

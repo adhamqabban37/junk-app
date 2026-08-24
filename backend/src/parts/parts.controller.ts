@@ -26,6 +26,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { UserRole } from '../database/entities';
 import { ListPartsDto } from './dto/list-parts.dto';
 import { MergePartsDto } from './dto/merge-parts.dto';
+import { SetManualGradeDto } from './dto/set-manual-grade.dto';
 import { SetPartPriceDto } from './dto/set-part-price.dto';
 import { PartsService } from './parts.service';
 
@@ -115,6 +116,19 @@ export class PartsController {
   ) {
     await this.partsService.approve(user.tenantId, id);
     return { status: 'approved' };
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.MANAGER, UserRole.OWNER)
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/manual-grade')
+  async setManualGrade(
+    @CurrentUser() user: JwtPayload,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: SetManualGradeDto,
+  ) {
+    await this.partsService.recordManualGrade(user.tenantId, id, body.grade);
+    return { status: 'graded', grade: body.grade };
   }
 
   @UseGuards(RolesGuard)
