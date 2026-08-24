@@ -158,14 +158,18 @@ export default function InventoryPage() {
                     className="absolute left-0 top-0 grid w-full grid-cols-6 items-center gap-4 border-b border-border px-4 text-sm"
                     style={{ height: virtualRow.size, transform: `translateY(${virtualRow.start}px)` }}
                   >
-                    <span role="cell">{item.taxonomyName ?? "Part"}</span>
-                    <span role="cell">
+                    <span role="cell" className="min-w-0 truncate" title={item.taxonomyName ?? undefined}>
+                      {item.taxonomyName ?? "Part"}
+                    </span>
+                    <span role="cell" className="min-w-0 truncate">
                       {item.vehicle
                         ? [item.vehicle.year, item.vehicle.make, item.vehicle.model].filter(Boolean).join(" ")
                         : "—"}
                     </span>
-                    <span role="cell">{item.vehicle?.vin ?? "—"}</span>
-                    <span role="cell" className="capitalize">
+                    <span role="cell" className="min-w-0 truncate font-mono text-xs" title={item.vehicle?.vin ?? undefined}>
+                      {item.vehicle?.vin ?? "—"}
+                    </span>
+                    <span role="cell" className="min-w-0 truncate capitalize">
                       {statusLabel(item.status)}
                     </span>
                     <span role="cell">
