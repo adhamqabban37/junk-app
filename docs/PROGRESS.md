@@ -2,6 +2,19 @@
 
 Tracks completion against `docs/BUILD_PLAN.md`. Check boxes as each phase's acceptance criteria are verified.
 
+## Session 2026-08-24: catch-up — verified and pushed the two commits the previous session ran out of budget before documenting/pushing, started local dev.
+
+Previous session (2026-08-23) shipped two more commits after this file's last entry below but hit its session limit before writing them up or pushing: `7cf8f61` (ARA/Car-Part.com A/B/C/X damage-unit grading for sheet-metal parts) and `8cf96ea` (manual/photo-less part grading + Car-Part.com-style taxonomy picker). Both were already committed locally (see their own commit messages above for full detail), just not documented here or pushed.
+
+**This session:** pushed both to `origin/main` (was 1 commit behind, now in sync — `git push` succeeded, `7cf8f61..8cf96ea`). Re-verified the resulting `HEAD` is healthy before touching anything further: backend unit 30/30, frontend 209/209 (34 files), both workspaces lint clean (0 errors, only the pre-existing `no-unsafe-argument` warnings this doc already tracks as expected noise), `migrate` confirms the dev DB already has both new migrations (`1787510000000-AddAraPartGrading`, `1787520000000-AllowManualAiAnalysis`) applied — no pending migrations. `GEMINI_API_KEY` confirmed non-empty in `backend/.env`.
+
+**Started local dev environment** for the user: Docker Desktop wasn't running (had to be launched manually — `C:\Users\vms\AppData\Local\Programs\DockerDesktop\Docker Desktop.exe`, not the default `Program Files` path this doc's own setup instructions assume), then `docker compose` confirmed Postgres+Redis already running. Backend (`npm run dev:backend`, port 3001) and frontend (`npm run dev:frontend`, port 3000) both confirmed serving `200` — route table logs cleanly including yesterday's new `/parts/:id/manual-grade` and `/parts/:id/merge` routes.
+
+**Not done / open follow-ups (carried over, still true):**
+- Live browser verification of the ARA grading + manual-grading UI has still never happened — same sandboxed-Chrome `localhost` limitation documented in the 2026-08-23 entry below.
+- `docs/BUILD_PLAN.md` still doesn't reflect several sessions' worth of schema/flow changes (carried over from multiple earlier sessions).
+- Car-Part.com/eBay integration still blocked on the user obtaining external access first (see the dedicated section further below) — no code-side action pending.
+
 ## Session 2026-08-23: all 5 phases of the photo -> part identity plan (`zesty-zooming-lemon.md`) now done. Read this first next time.
 
 User asked to re-validate the phased plan and drive it to completion end-to-end without stopping for check-ins. Investigation found **Phases 3 and 4 were already fully implemented in the uncommitted working tree** (per-section Gemini calls, `group_id`-based grouping, one Part per confirmed group) but never documented in this file and never actually verified -- the last entry below still says "Phase 3 not started next." Only Phase 5 (the manager merge tool) was genuinely missing.
