@@ -112,7 +112,7 @@ describe("InventoryPage", () => {
     expect(within(row).getByRole("button", { name: "—" })).toBeInTheDocument();
 
     await user.click(within(row).getByRole("button", { name: "—" }));
-    await user.type(within(row).getByRole("spinbutton"), "49.99");
+    await user.type(within(row).getByRole("textbox"), "49.99");
     await user.click(within(row).getByRole("button", { name: /save/i }));
 
     await waitFor(() => expect(setPartPrice).toHaveBeenCalledWith("fake-token", "part-1", 49.99));

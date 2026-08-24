@@ -179,16 +179,18 @@ export default function InventoryPage() {
                         <div className="flex items-center gap-1">
                           <Input
                             aria-label={`Price for ${item.taxonomyName ?? "part"}`}
-                            type="number"
-                            min="0"
-                            step="0.01"
+                            type="text"
+                            inputMode="decimal"
                             value={priceDraft}
-                            onChange={(e) => setPriceDraft(e.target.value)}
+                            onChange={(e) => {
+                              const next = e.target.value;
+                              if (/^\d*\.?\d{0,2}$/.test(next)) setPriceDraft(next);
+                            }}
                             onKeyDown={(e) => {
                               if (e.key === "Enter") void handleSavePrice(item.id);
                               if (e.key === "Escape") setEditingPriceId(null);
                             }}
-                            className="h-8 w-20 px-2 text-sm"
+                            className="h-8 w-28 px-2 text-sm"
                             autoFocus
                           />
                           <Button
